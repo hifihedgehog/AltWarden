@@ -189,6 +189,11 @@ CREATE TABLE IF NOT EXISTS webhooks (
     last_status INTEGER,
     last_sent_at REAL
 );
+CREATE TABLE IF NOT EXISTS lookup_keys (
+    guild_id TEXT PRIMARY KEY,
+    lookup_key TEXT NOT NULL,
+    saved_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS api_keys (
     key_hash TEXT PRIMARY KEY,
     guild_id TEXT NOT NULL,
@@ -339,8 +344,19 @@ class Database:
     async def forget_guild(self, guild_id: str) -> None:
         """Remove every row for a server. Used by the uninstall command."""
         for table in ("sessions", "members", "attempts", "identifiers", "links", "trusted_pairs", "bans", "appeals",
-                      "audit", "webhooks", "api_keys", "command_syncs", "guilds"):
+                      "audit", "webhooks", "api_keys", "lookup_keys", "command_syncs", "guilds"):
             await self.run(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+
+    async def lookup_key(self, guild_id: str) -> str | None:
+        return await self.scalar("SELECT lookup_key FROM lookup_keys WHERE guild_id = ?", (guild_id,))
+
+    async def set_lookup_key(self, guild_id: str, key: str | None) -> None:
+        if key is None:
+            await self.run("DELETE FROM lookup_keys WHERE guild_id = ?", (guild_id,))
+            return
+        await self.run("INSERT INTO lookup_keys (guild_id, lookup_key, saved_at) VALUES (?, ?, ?) "
+                       "ON CONFLICT (guild_id) DO UPDATE SET lookup_key = excluded.lookup_key, saved_at = excluded.saved_at",
+                       (guild_id, key, time.time()))
 
     # --- members ----------------------------------------------------------------------------
 

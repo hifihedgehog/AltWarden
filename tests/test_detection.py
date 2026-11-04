@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from altwarden import altmatch, catalog, db, engine, netintel, settings, signals
-from altwarden.netintel import NetInfo
+from altwarden.netintel import NetInfo, external_lookup
 
 CHROME_WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 FIREFOX_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0"
@@ -594,6 +594,62 @@ class Lists(unittest.TestCase):
 
     def test_labels_never_name_the_address(self):
         self.assertEqual(self.net.lookup("8.8.4.4").labels(), ["vpn"])
+
+
+class FakeAnswer:
+    def __init__(self, body):
+        self.body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+    async def json(self, content_type=None):
+        return self.body
+
+
+class FakeSession:
+    def __init__(self, body):
+        self.body, self.urls, self.params = body, [], []
+
+    def get(self, url, params=None, timeout=None):
+        self.urls.append(url)
+        self.params.append(params)
+        return FakeAnswer(self.body)
+
+
+def proxycheck_answer(ip, **detections):
+    """The shape proxycheck.io's v3 API returned on November 4, 2026."""
+    return {"status": "ok", ip: {"network": {"type": "Business"}, "detections": {
+        "proxy": False, "vpn": False, "tor": False, "hosting": False, "anonymous": False, "risk": 0, **detections}}, "query_time": 4}
+
+
+class OutsideLookup(unittest.IsolatedAsyncioTestCase):
+    async def test_proxy_vpn_and_tor_count(self):
+        for name in ("proxy", "vpn", "tor"):
+            self.assertIs(await external_lookup(FakeSession(proxycheck_answer("1.2.3.4", **{name: True})), "1.2.3.4", "k"), True, name)
+
+    async def test_a_clean_address_doesnt(self):
+        self.assertIs(await external_lookup(FakeSession(proxycheck_answer("1.2.3.4")), "1.2.3.4", "k"), False)
+
+    async def test_anonymous_alone_doesnt_count_because_googles_dns_has_it(self):
+        self.assertIs(await external_lookup(FakeSession(proxycheck_answer("8.8.8.8", anonymous=True, risk=100)), "8.8.8.8", "k"), False)
+
+    async def test_ipv6_works_whatever_form_the_answer_uses(self):
+        self.assertIs(await external_lookup(FakeSession(proxycheck_answer("2606:4700::1", vpn=True)), "2606:4700:0::1", "k"), True)
+
+    async def test_the_key_is_sent_only_when_there_is_one(self):
+        session = FakeSession(proxycheck_answer("1.2.3.4"))
+        await external_lookup(session, "1.2.3.4", "abc")
+        await external_lookup(session, "1.2.3.4", None)
+        self.assertEqual(session.params, [{"key": "abc"}, None])
+        self.assertEqual(session.urls[0], "https://proxycheck.io/v3/1.2.3.4")
+
+    async def test_a_refusal_or_odd_answer_counts_as_no_answer(self):
+        for body in ({"status": "denied", "message": "quota"}, {"status": "error"}, [], None, {"status": "ok"}):
+            self.assertIsNone(await external_lookup(FakeSession(body), "1.2.3.4", "k"), body)
 
 
 if __name__ == "__main__":

@@ -751,15 +751,93 @@ class Dashboard(Base):
         self.client.app["public_bot"] = True
         self.assertTrue((await (await self.client.get(url, headers=self.session_cookie)).json())["public_bot"])
 
-    async def test_health_says_when_the_outside_lookup_cant_run(self):
+    async def csrf(self):
+        session = await (await self.client.get("/api/session", headers=self.session_cookie)).json()
+        return {**self.session_cookie, "X-CSRF-Token": session["csrf"], "Origin": self.origin} if hasattr(self, "origin") else {**self.session_cookie, "X-CSRF-Token": session["csrf"]}
+
+    async def test_a_lookup_key_is_saved_but_never_shown(self):
+        await self.log_in()
+        url = f"/api/guilds/{GUILD}/lookup-key"
+        key = "111111-222222-333333-444444"
+        response = await self.client.put(url, json={"key": key}, headers=await self.csrf())
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())["lookup_key"], {"saved": True, "ending": "4444"})
+        self.assertEqual(await self.db.lookup_key(GUILD), key)
+        page = await self.client.get(f"/api/guilds/{GUILD}/settings", headers=self.session_cookie)
+        text = await page.text()
+        self.assertNotIn(key, text)
+        self.assertEqual((await page.json())["lookup_key"], {"saved": True, "ending": "4444"})
+        audit = await (await self.client.get(f"/api/guilds/{GUILD}/audit", headers=self.session_cookie)).text()
+        self.assertNotIn(key, audit)
+        self.assertNotIn(key, json.dumps([notice.embeds for _, notice in self.port.sent]))
+        exported = await self.client.post(f"/api/guilds/{GUILD}/settings/export", json={}, headers=await self.csrf())
+        self.assertNotIn(key, await exported.text())
+
+    async def test_a_lookup_key_can_be_removed_and_goes_with_the_server(self):
+        await self.log_in()
+        url = f"/api/guilds/{GUILD}/lookup-key"
+        await self.client.put(url, json={"key": "abcdef-123456"}, headers=await self.csrf())
+        response = await self.client.delete(url, headers=await self.csrf())
+        self.assertEqual((await response.json())["lookup_key"], {"saved": False, "ending": None})
+        self.assertIsNone(await self.db.lookup_key(GUILD))
+        await self.db.set_lookup_key(GUILD, "abcdef-123456")
+        await self.db.forget_guild(GUILD)
+        self.assertIsNone(await self.db.lookup_key(GUILD))
+
+    async def test_a_bad_lookup_key_is_refused(self):
+        await self.log_in()
+        for key in ("", "short", "has spaces in it", "x" * 101, "semi;colon-1234"):
+            response = await self.client.put(f"/api/guilds/{GUILD}/lookup-key", json={"key": key}, headers=await self.csrf())
+            self.assertEqual(response.status, 400, key)
+        self.assertIsNone(await self.db.lookup_key(GUILD))
+
+    async def test_a_view_only_member_cant_save_a_lookup_key(self):
+        await self.log_in()
+        document = await self.service.get_settings(GUILD)
+        document["permissions"]["pages"]["settings"] = {"edit": {"required": ["ban_members"], "overrides": []}}
+        await self.service.save_settings(GUILD, document)
+        await self.log_in(user=OTHER_USER, owner=False)
+        response = await self.client.put(f"/api/guilds/{GUILD}/lookup-key", json={"key": "abcdef-123456"}, headers=await self.csrf())
+        self.assertEqual(response.status, 403)
+        self.assertIsNone(await self.db.lookup_key(GUILD))
+
+    async def test_health_says_when_the_lookup_has_no_key(self):
         await self.log_in()
         document = await self.service.get_settings(GUILD)
         document["core"]["external_vpn_lookup"] = True
         await self.service.save_settings(GUILD, document)
         url = f"/api/guilds/{GUILD}/health"
-        self.assertTrue((await (await self.client.get(url, headers=self.session_cookie)).json())["vpn_lookup_idle"])
-        self.service.proxycheck = lambda ip: None
-        self.assertFalse((await (await self.client.get(url, headers=self.session_cookie)).json())["vpn_lookup_idle"])
+        self.assertTrue((await (await self.client.get(url, headers=self.session_cookie)).json())["lookup_without_key"])
+        await self.db.set_lookup_key(GUILD, "abcdef-123456")
+        self.assertFalse((await (await self.client.get(url, headers=self.session_cookie)).json())["lookup_without_key"])
+
+    async def test_the_lookup_uses_this_servers_key_and_can_stop_a_member(self):
+        asked = []
+
+        async def lookup(ip, key):
+            asked.append((ip, key))
+            return True
+
+        self.service.proxycheck = lookup
+        document = await self.service.get_settings(GUILD)
+        document["core"]["external_vpn_lookup"] = True
+        document["checks"]["vpn"].update(enabled=True, action="deny")
+        await self.service.save_settings(GUILD, document)
+        await self.db.set_lookup_key(GUILD, "abcdef-123456")
+        result = await self.verify_through()
+        self.assertEqual(asked[0][1], "abcdef-123456")
+        self.assertEqual(result["status"], "failed", result)
+
+    async def test_the_lookup_isnt_asked_unless_the_server_chose_it(self):
+        asked = []
+
+        async def lookup(ip, key):
+            asked.append(ip)
+            return True
+
+        self.service.proxycheck = lookup
+        await self.verify_through()
+        self.assertEqual(asked, [])
 
     async def test_save_settings_writes_the_audit_log(self):
         await self.log_in()

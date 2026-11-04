@@ -27,6 +27,7 @@ export async function render(view) {
   });
   let draft = part.draft;
   let filter = "";
+  let lookupKey = loaded.lookup_key;
   const root = h("div");
   const searchBox = h("input", { type: "search", placeholder: "Search rules", "aria-label": "Search rules", oninput: (event) => {
     filter = event.target.value.trim().toLowerCase();
@@ -108,6 +109,25 @@ export async function render(view) {
           h("span", { text: paused ? "Paused: this check needs the web page mode." : item.blurb })),
         check.enabled && item.id !== "alt_account" ? actionControl(check) : null),
       options.length ? h("div", { class: "rule-body" }, options) : null);
+  }
+
+  // Saved on its own, because a key must stay out of the settings document, its exports and its change log.
+  function lookupKeyField() {
+    const box = h("input", { type: "password", autocomplete: "off", maxlength: 100, disabled: !canEdit, "aria-label": "proxycheck.io API key",
+      placeholder: lookupKey.saved ? `Saved, ending in ${lookupKey.ending}` : "Paste your key" });
+    const send = async (options, done) => {
+      try {
+        lookupKey = (await api(`${guildPath}/lookup-key`, options)).lookup_key;
+        toast(done);
+        draw();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    };
+    return field("proxycheck.io API key", h("div", { class: "toolbar" }, box,
+      h("button", { class: "button small primary", type: "button", text: "Save key", disabled: !canEdit, onclick: () => send({ method: "PUT", body: { key: box.value } }, "Key saved.") }),
+      lookupKey.saved ? h("button", { class: "button small", type: "button", text: "Remove key", disabled: !canEdit, onclick: () => send({ method: "DELETE" }, "Key removed.") }) : null),
+    "Optional. Without one, proxycheck.io allows 100 lookups a day. A free key from proxycheck.io allows 1,000. It's saved for this server, and only its last four characters are ever shown.");
   }
 
   function switchRow(id, title, blurb, value, onChange, body) {
@@ -264,7 +284,7 @@ export async function render(view) {
         switchRow("reason", "Tell members why", "Show which check stopped them. Turn this off to give evaders less to work with.", core.show_reason, (value) => edit(() => { core.show_reason = value; })),
         switchRow("failopen", "Let members through if network data is missing", "When off, verification waits until the lists load.", core.fail_open, (value) => edit(() => { core.fail_open = value; })),
         switchRow("direct", "Skip the start page", "Send members straight to Discord's sign-in instead of showing the page that explains it first.", core.direct_signin, (value) => edit(() => { core.direct_signin = value; })),
-        switchRow("external", "Outside VPN lookup", "Also ask proxycheck.io about each address. This sends members' addresses to that service, so it is off by default. It only runs if the server hosting AltWarden has a proxycheck.io key.", core.external_vpn_lookup, (value) => edit(() => { core.external_vpn_lookup = value; })))),
+        switchRow("external", "Outside VPN lookup", "Also ask proxycheck.io about each address. This sends members' addresses to that service, so it is off by default.", core.external_vpn_lookup, (value) => edit(() => { core.external_vpn_lookup = value; }, true), lookupKeyField()))),
 
       groups.map(([group, info]) => {
         const rows = state.catalog.checks.filter((item) => item.group === group);

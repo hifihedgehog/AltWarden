@@ -661,9 +661,9 @@ class BrowserVerdicts(unittest.TestCase):
         report = clean_report(bot={"bot": True, "botKind": "headless_chrome"})
         self.assertEqual(judge(report).reasons["automated"][0], "BotD: headless_chrome")
 
-    def test_the_standard_preset_only_records_what_could_be_innocent(self):
+    def test_the_standard_preset_stops_people(self):
         document = settings.apply_preset(settings.defaults(), "standard")
-        self.assertEqual(document["checks"]["antidetect"]["action"], "watch")
+        self.assertEqual(document["checks"]["antidetect"]["action"], "deny")
         self.assertEqual(document["checks"]["devtools"]["action"], "deny")
 
 

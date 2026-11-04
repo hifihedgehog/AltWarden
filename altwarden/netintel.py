@@ -379,14 +379,23 @@ class NetIntel:
         return not all(self._fresh(name) for name in SOURCES)
 
 
-async def external_lookup(session: aiohttp.ClientSession, ip: str, key: str) -> dict | None:
-    """Ask proxycheck.io about one address. Runs only for servers that chose this, and fails quietly."""
+async def external_lookup(session: aiohttp.ClientSession, ip: str, key: str | None = None) -> bool | None:
+    """Ask proxycheck.io if an address is a proxy, VPN or Tor exit. Runs only for servers that chose this, and fails quietly.
+
+    "anonymous" doesn't count, because it's true for public addresses such as Google's DNS. The key
+    is optional: proxycheck.io allows 100 lookups a day without one and 1,000 with a free one.
+    """
     try:
-        async with session.get(f"https://proxycheck.io/v2/{ip}", params={"key": key, "vpn": 1, "risk": 1},
+        async with session.get(f"https://proxycheck.io/v3/{ip}", params={"key": key} if key else None,
                                timeout=aiohttp.ClientTimeout(total=3)) as response:
             body = await response.json(content_type=None)
     except Exception as exc:
         log.warning("Outside VPN lookup failed: %s", type(exc).__name__)
         return None
-    entry = body.get(ip) if isinstance(body, dict) else None
-    return entry if isinstance(entry, dict) else None
+    if not isinstance(body, dict):
+        return None
+    if body.get("status") not in ("ok", "warning"):
+        log.warning("Outside VPN lookup was refused: %s", body.get("status"))
+        return None
+    entry = next((value for value in body.values() if isinstance(value, dict) and isinstance(value.get("detections"), dict)), None)
+    return None if entry is None else any(entry["detections"].get(name) is True for name in ("proxy", "vpn", "tor"))

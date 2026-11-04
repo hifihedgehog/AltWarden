@@ -404,7 +404,7 @@ CONTROLS = r"""(() => {
   window.__controls = () => {
     const seen = new Map();
     const list = [];
-    for (const node of document.querySelector('.view').querySelectorAll('input:not([type=search]):not([type=file]), select, textarea, .segments')) {
+    for (const node of document.querySelector('.view').querySelectorAll('input:not([type=search]):not([type=file]):not([type=password]), select, textarea, .segments')) {
       if (node.disabled || node.matches('.duration select') || node.closest('[hidden], .preview-tools') || node.getAttribute('aria-label') === 'Message') continue;
       const row = node.closest('[id^=item-]')?.id.slice(5) ?? '';
       const base = `${row}/${kindOf(node)}/${nameOf(node)}`;
@@ -563,6 +563,22 @@ async def walk_every_control(cdp, service, port) -> None:
     delivered, failed = await change_each_control(cdp, service, rule_paths)
     failures += failed
     results["controls on the Rules page"] = len(delivered)
+
+    # The proxycheck.io key has its own button, and has to stay out of the settings and off the page.
+    if await cdp.evaluate("(() => { const box = document.querySelector('#item-external .switch input'); if (box.checked) return false; box.click(); return true; })()"):
+        await save_bar(cdp)
+    await cdp.until("document.querySelector('#item-external input[type=password]')", 3)
+    lookup_key = "walk-1234-5678"
+    await cdp.evaluate(f"document.querySelector('#item-external input[type=password]').value = {json.dumps(lookup_key)}")
+    await click_text(cdp, "#item-external button", "Save key")
+    await cdp.until("document.querySelector('#item-external input[type=password]')?.placeholder.includes('ending in')", 3)
+    results["proxycheck key saved by its own button"] = await service.db.lookup_key(GUILD) == lookup_key
+    results["the page shows only the key's last four"] = await cdp.evaluate(
+        "(() => { const box = document.querySelector('#item-external input[type=password]'); return box.placeholder === 'Saved, ending in 5678' && box.value === ''; })()")
+    results["the key stays out of the settings"] = lookup_key not in json.dumps(await service.get_settings(GUILD))
+    await click_text(cdp, "#item-external button", "Remove key")
+    await cdp.until("document.querySelector('#item-external input[type=password]')?.placeholder.includes('Paste')", 3)
+    results["proxycheck key removed"] = await service.db.lookup_key(GUILD) is None
 
     await cdp.evaluate("document.querySelector('#item-core .segments button.web')?.click()")
     await save_bar(cdp)

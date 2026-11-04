@@ -86,9 +86,7 @@ async def run(args: argparse.Namespace) -> None:
         app["webhook_http"] = webhook_http
         app["post_message"] = bot.post_message
         service.webhook_sender = lambda guild_id, event, payload: send_webhooks(app, guild_id, event, payload)
-        proxycheck_key = os.environ.get("PROXYCHECK_KEY")
-        if proxycheck_key:
-            service.proxycheck = lambda ip: external_lookup(http, ip, proxycheck_key)
+        service.proxycheck = lambda ip, key: external_lookup(http, ip, key)
 
         runner = web.AppRunner(app, access_log=None)  # request logs would hold members' addresses
         await runner.setup()

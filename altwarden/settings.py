@@ -178,7 +178,7 @@ def _name_style(raw: dict) -> dict:
 
 def _check_defaults() -> dict:
     """Every option of every check, before a preset is applied."""
-    checks: dict[str, dict] = {check_id: {"enabled": False, "action": WATCH} for check_id in CHECK_IDS}
+    checks: dict[str, dict] = {check_id: {"enabled": False, "action": DENY} for check_id in CHECK_IDS}
     checks["account_age"]["days"] = 7
     checks["alt_account"].update({
         "methods": {"cookie": True, "fingerprint": True, "ip": True},
@@ -220,7 +220,7 @@ def defaults() -> dict:
                           "auto_close": False, "member_close": False},
         },
         "checks": _check_defaults(),
-        "honeypot": {"enabled": False, "channel": None, "action": "log", "timeout_minutes": 60,
+        "honeypot": {"enabled": False, "channel": None, "action": "softban", "timeout_minutes": 60,
                      "whitelist_roles": []},
         "raid": {"enabled": True, "joins": 15, "seconds": 60, "duration_minutes": 15, "min_account_days": 7,
                  "alert_role": None},

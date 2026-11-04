@@ -256,8 +256,36 @@ async def settings_get(request: web.Request) -> web.Response:
     if isinstance(guarded, web.Response):
         return guarded
     _, document, viewer = guarded
-    return web.json_response({"settings": _rules_view(document), "paused": settings_module.paused_checks(document),
+    key = await request.app["service"].db.lookup_key(_gid(request))
+    return web.json_response({"settings": _rules_view(document), "paused": settings_module.paused_checks(document), "lookup_key": _lookup_key_view(key),
                               "can_edit": access.allowed(settings_module.page_rule(document, "settings", "edit"), viewer)})
+
+
+def _lookup_key_view(key: str | None) -> dict:
+    """The page learns that a key is saved and how it ends. The key itself never goes back to a browser."""
+    return {"saved": bool(key), "ending": key[-4:] if key else None}
+
+
+async def lookup_key_put(request: web.Request) -> web.Response:
+    guarded = await _guard(request, "settings", "edit")
+    if isinstance(guarded, web.Response):
+        return guarded
+    body = await _body(request)
+    key = str(body.get("key") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,100}", key):
+        return json_error(400, "That doesn't look like a proxycheck.io key.")
+    session = guarded[0]
+    await request.app["service"].set_lookup_key(_gid(request), key, actor_id=session["user_id"], actor_name=session["username"])
+    return web.json_response({"ok": True, "lookup_key": _lookup_key_view(key)})
+
+
+async def lookup_key_delete(request: web.Request) -> web.Response:
+    guarded = await _guard(request, "settings", "edit")
+    if isinstance(guarded, web.Response):
+        return guarded
+    session = guarded[0]
+    await request.app["service"].set_lookup_key(_gid(request), None, actor_id=session["user_id"], actor_name=session["username"])
+    return web.json_response({"ok": True, "lookup_key": _lookup_key_view(None)})
 
 
 async def settings_put(request: web.Request) -> web.Response:
@@ -474,7 +502,7 @@ async def health_view(request: web.Request) -> web.Response:
     data["lists_loaded"] = service.net.ready
     data["lists_missing"] = service.net.missing()
     data["public_bot"] = bool(request.app.get("public_bot"))
-    data["vpn_lookup_idle"] = guarded[1]["core"]["external_vpn_lookup"] and service.proxycheck is None
+    data["lookup_without_key"] = guarded[1]["core"]["external_vpn_lookup"] and not await service.db.lookup_key(_gid(request))
     data["checked_at"] = time.time()
     return web.json_response(data)
 
@@ -784,6 +812,8 @@ def routes(app: web.Application) -> None:
     post(f"{gid}/setup", setup)
     get(f"{gid}/settings", settings_get)
     put(f"{gid}/settings", settings_put)
+    put(f"{gid}/lookup-key", lookup_key_put)
+    delete(f"{gid}/lookup-key", lookup_key_delete)
     post(f"{gid}/settings/preset", apply_preset)
     post(f"{gid}/settings/preview", preview)
     post(f"{gid}/settings/export", export_settings)

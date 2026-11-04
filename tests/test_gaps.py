@@ -143,6 +143,16 @@ class Pages(Base):
             self.assertEqual(response.status, 200, path)
             self.assertIn("AltWarden", text, path)
 
+    async def test_a_deploy_reaches_browsers_at_once(self):
+        response = await self.client.get("/static/dash/settings.js")
+        self.assertEqual(response.headers["Cache-Control"], "no-cache")
+        again = await self.client.get("/static/dash/settings.js", headers={"If-None-Match": response.headers["ETag"]})
+        self.assertEqual(again.status, 304, "an unchanged file isn't sent twice")
+
+    async def test_versioned_libraries_can_stay_cached(self):
+        response = await self.client.get("/static/vendor/botd-2.0.0.esm.js")
+        self.assertIn("immutable", response.headers["Cache-Control"])
+
     async def test_nothing_offers_to_add_the_bot(self):
         response = await self.client.get("/invite", allow_redirects=False)
         self.assertEqual(response.status, 404)

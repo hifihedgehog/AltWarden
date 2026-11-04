@@ -160,7 +160,8 @@ async def add_headers(request: web.Request, response: web.StreamResponse) -> Non
     elif request.path.startswith("/static/vendor/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     elif request.path.startswith("/static/"):
-        response.headers["Cache-Control"] = "public, max-age=3600"
+        # A browser may keep these, but has to ask first, or a deploy wouldn't reach it for as long as it held its copy.
+        response.headers["Cache-Control"] = "no-cache"
 
 
 def page(name: str, csp: str | None = None):

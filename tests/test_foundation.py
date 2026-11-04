@@ -149,11 +149,12 @@ class SettingsDocument(unittest.TestCase):
         self.assertEqual(result["core"]["verified_role"], "970000000000000111")
         self.assertEqual(result["checks"]["geogate"]["countries"], ["RU"])
 
-    def test_gentle_preset_never_blocks(self):
+    def test_gentle_preset_only_records_except_two_factor(self):
         doc = settings.apply_preset(settings.defaults(), "gentle")
         for check_id, check in doc["checks"].items():
-            if check["enabled"] and check_id != "max_attempts":
+            if check["enabled"] and check_id not in ("max_attempts", "mfa"):
                 self.assertEqual(check["action"], "watch", check_id)
+        self.assertEqual(doc["checks"]["mfa"]["action"], "deny", "no preset changes this check, and its blurb says so")
 
     def test_problems_list(self):
         self.assertEqual(len(settings.problems(settings.defaults())), 2)

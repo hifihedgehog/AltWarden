@@ -365,12 +365,33 @@ class ServerStates(Helpers):
 
 
 class Presets(unittest.TestCase):
-    def test_new_servers_start_with_these_three_on_and_only_recording(self):
+    def test_new_servers_start_with_these_three_on_and_stopping_people(self):
         document = settings.defaults()
         for check_id in ("mfa", "privacy", "rooted"):
             check = document["checks"][check_id]
-            self.assertEqual((check["enabled"], check["action"]), (True, "watch"), check_id)
+            self.assertEqual((check["enabled"], check["action"]), (True, "deny"), check_id)
         self.assertEqual(settings.detect_preset(document), "standard")
+
+    def test_no_default_only_watches(self):
+        """Only the account that verified first stays on Watch, because the alt is the one being stopped."""
+        document = settings.defaults()
+        for check_id, check in document["checks"].items():
+            self.assertNotEqual(check["action"], "watch", check_id)
+        alt = document["checks"]["alt_account"]
+        self.assertEqual((alt["alt_action"], alt["banned_alt_action"], alt["main_action"]), ("kick", "ban", "watch"))
+        self.assertEqual(document["checks"]["fake_ua"]["action"], "kick")
+        self.assertNotEqual(document["honeypot"]["action"], "log")
+
+    def test_turning_on_a_check_that_starts_off_stops_people(self):
+        document = settings.defaults()
+        for check_id in ("avatar", "mobile_data", "geogate"):
+            self.assertFalse(document["checks"][check_id]["enabled"], check_id)
+            self.assertEqual(document["checks"][check_id]["action"], "deny", check_id)
+
+    def test_strict_never_only_watches(self):
+        document = settings.apply_preset(settings.defaults(), "strict")
+        for check_id, check in document["checks"].items():
+            self.assertNotEqual(check["action"], "watch", check_id)
 
     def test_new_servers_ask_rejoining_members_to_verify(self):
         self.assertFalse(settings.defaults()["core"]["remember_rejoin"])

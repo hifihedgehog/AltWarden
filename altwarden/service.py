@@ -93,7 +93,7 @@ class Service:
         self.zone_countries = zone_countries or {}
         self.raid = RaidWatch()
         self.webhook_sender = None  # set by the web layer, which owns the HTTP session
-        self.proxycheck = None      # set when an outside lookup is configured
+        self.proxycheck = None      # set at startup, and asked only for servers that chose it
         self._settings: dict[str, dict] = {}
         self._honeypot_seen: dict[tuple, float] = {}
         self._background: set = set()  # asyncio keeps only a weak reference, so a running task needs one here
@@ -142,6 +142,17 @@ class Service:
                     {"name": change["path"][:250], "value": f"`{_short(change['before'])}` → `{_short(change['after'])}`", "inline": False}
                     for change in changes[:8]]))
         return changes
+
+    async def set_lookup_key(self, guild_id: str, key: str | None, *, actor_id: str, actor_name: str) -> None:
+        """Save or remove a server's proxycheck.io key. The key itself never reaches the audit log or the log channel."""
+        await self.db.set_lookup_key(guild_id, key)
+        what = "saved" if key else "removed"
+        await self.db.add_audit(guild_id, "settings", actor_id=actor_id, actor_name=actor_name,
+                                detail={"changes": [{"path": "proxycheck.io key", "before": None, "after": what}]})
+        document = await self.get_settings(guild_id)
+        if document is not None:
+            await self._log(guild_id, document, ["settings"], notices.staff_log(
+                "Settings changed", f"<@{actor_id}> {what} the proxycheck.io key.", notices.GRAY))
 
     def forget_cached(self, guild_id: str) -> None:
         self._settings.pop(guild_id, None)
@@ -444,8 +455,7 @@ class Service:
                                  stored.get("email_verified"), stored.get("email_disposable"))
         net = self.net.lookup(ip)
         if rules["core"]["external_vpn_lookup"] and self.proxycheck is not None:
-            answer = await self.proxycheck(ip)
-            if answer and answer.get("proxy") == "yes":
+            if await self.proxycheck(ip, await self.db.lookup_key(guild_id)):
                 net.vpn = True
         verdict = signals.evaluate(report, headers)
         zone = report.get("tz", {}).get("name") if isinstance(report.get("tz"), dict) else None

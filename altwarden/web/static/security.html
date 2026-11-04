@@ -19,7 +19,7 @@
       <tr><td>Discord IDs, usernames and avatars of people who verified</td><td>Any IP address, email address, cookie value or fingerprint</td></tr>
       <tr><td>Attempt results and labels</td><td>Any Discord access or refresh token</td></tr>
       <tr><td>Keyed hashes they can't read without the key</td><td>A way to connect one person's hashes across two servers</td></tr>
-      <tr><td>Webhook addresses and signing secrets, which are stored readable because signing needs them</td><td>API keys, which are stored as hashes</td></tr>
+      <tr><td>Webhook addresses and signing secrets, and any proxycheck.io key a server saved, which are stored readable because using them needs them</td><td>API keys, which are stored as hashes</td></tr>
       <tr><td>For staff signed in during the last 12 hours, the names of servers they can manage or share with AltWarden</td><td>The rest of their server list</td></tr>
     </table>
     <p>Discord IDs are stored as they are, so a stolen database can show that one account has records in two servers. Hashes can't be connected that way.</p>
