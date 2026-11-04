@@ -23,6 +23,7 @@ export async function render(view) {
     const result = await api(`${guildPath}/settings`, { method: "PUT", body: { settings: current.draft } });
     current.saved = result.settings;
     current.draft = clone(result.settings);
+    if (result.problem) toast(result.problem, true);
   });
   let draft = part.draft;
   let filter = "";
@@ -250,7 +251,7 @@ export async function render(view) {
         field([ "Verification channel ", h("span", { class: "required", text: "Required" }) ], channelPicker(core.channel, (value) => edit(() => { core.channel = value; }), { disabled: !canEdit }), "Members start here."),
         h("div", { class: "field wide" }, h("div", { class: "toolbar" }, messageLink("verification", "Edit the verification message")))),
       h("div", { class: "rule-list" },
-        switchRow("unverified", "Unverified role", instant ? "Paused: members are checked the moment they join, so this role has no use." : "Give a role until a member verifies.", core.unverified_enabled, (value) => edit(() => { core.unverified_enabled = value; }, true),
+        switchRow("unverified", "Unverified role", instant ? "Paused: members are checked the moment they join, so this role has no use." : "Give a role until a member verifies. Discord skips its own rules screen for anyone holding a role.", core.unverified_enabled, (value) => edit(() => { core.unverified_enabled = value; }, true),
           [field("Role", rolePicker(core.unverified_role, (value) => edit(() => { core.unverified_role = value; }), { disabled: !canEdit }))]),
         switchRow("autodm", "DM new members", "Send the link when a member joins.", core.auto_dm, (value) => edit(() => { core.auto_dm = value; })),
         switchRow("closeddms", "Ping when DMs are closed", instant ? "Paused: nothing is sent when a member joins in this mode." : core.auto_dm ? "Tell the member in the verification channel, then remove the ping." : "Waiting: turn on DM new members first.", core.notify_closed_dms.enabled, (value) => edit(() => { core.notify_closed_dms.enabled = value; }, true),
@@ -309,7 +310,7 @@ export async function render(view) {
           messageLink("honeypot", "Edit the warning"),
         ]))),
 
-      section("Data retention", "Stored values are keyed hashes, and these limits delete even those on schedule.", h("div", { class: "panel grid two", id: "item-privacy" },
+      section("Data retention", "Stored values are keyed hashes, and these limits delete even those on schedule.", h("div", { class: "panel grid two", id: "item-retention" },
         field("Keep connection hashes for (days)", number(draft.privacy.ip_days, (value) => edit(() => { draft.privacy.ip_days = value; }), { min: 1, max: 365, disabled: !canEdit })),
         field("Keep browser and device hashes for (days)", number(draft.privacy.identifier_days, (value) => edit(() => { draft.privacy.identifier_days = value; }), { min: 30, max: 730, disabled: !canEdit })),
         field("Keep attempt history for (days)", number(draft.privacy.attempt_days, (value) => edit(() => { draft.privacy.attempt_days = value; }), { min: 30, max: 730, disabled: !canEdit })),

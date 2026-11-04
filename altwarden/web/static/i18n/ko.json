@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "링크를 시크릿 창이 아닌 일반 창에서 열어 주세요.",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "브라우저가 이 서버에 필요한 정보를 차단하고 있어요. 기본 설정 브라우저를 사용해 주세요.",
   "This attempt scored too high on risk. Try another browser or connection.": "이번 시도의 위험 점수가 너무 높아요. 다른 브라우저나 연결을 사용해 보세요.",
-  "Open the link on your own device, not inside a virtual machine.": "링크를 가상 머신이 아닌 본인 기기에서 열어 주세요.",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "이 서버는 에뮬레이트되었거나 개조된 휴대폰을 받지 않아요. 일반 기기를 사용해 주세요."
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "링크를 가상 머신이 아닌 본인 기기에서 열어 주세요. 본인 컴퓨터라면 브라우저 설정에서 하드웨어 가속을 켜세요.",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "이 서버는 에뮬레이트되었거나 개조된 휴대폰을 받지 않아요. 일반 기기를 사용해 주세요.",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "지난 시도는 통과하지 못했습니다. 준비되면 '다시 시도하기'를 누르세요.",
+  "Please sign in again": "다시 로그인해 주세요",
+  "This server's rules changed, so Discord needs to confirm your account again.": "이 서버의 규칙이 바뀌어 Discord에서 계정을 다시 확인해야 합니다.",
+  "Actions you took as staff": "스태프로서 수행한 작업",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "아무것도 삭제되지 않았습니다. 로그인이 끝났을 수 있으니 다시 로그인한 뒤 다시 시도하세요."
 }

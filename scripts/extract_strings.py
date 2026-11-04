@@ -25,6 +25,7 @@ def main() -> None:
     found += [value for value in STRING.findall(block) if " " in value]
     found += KINDS.findall((JS / "mydata.js").read_text(encoding="utf-8"))
     found += list(FAILURE_TEXT.values())
+    found += ["Please sign in again", "This server's rules changed, so Discord needs to confirm your account again."]  # sent by the server
     unique = list(dict.fromkeys(value for value in found if " " in value or value in SINGLE_WORDS))
     target = ROOT / "altwarden" / "web" / "static" / "i18n" / "en.json"
     target.write_text(json.dumps(unique, ensure_ascii=False, indent=0), encoding="utf-8")

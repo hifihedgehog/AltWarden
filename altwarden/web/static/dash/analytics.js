@@ -180,9 +180,14 @@ export async function render(view) {
     const [start, end] = period();
     const query = new URLSearchParams({ from: String(start), to: String(end), tz: zone, compare: compare ? "1" : "0" });
     if (compare === "month") {
-      const first = new Date(start * 1000);
-      query.set("compare_from", String(new Date(first.getFullYear(), first.getMonth() - 1, first.getDate()).getTime() / 1000));
-      query.set("compare_to", String(new Date(new Date(end * 1000).getFullYear(), new Date(end * 1000).getMonth() - 1, new Date(end * 1000).getDate() + 1).getTime() / 1000));
+      // The same day of the month before, or that month's last day. March 31 has no February 31.
+      const monthBefore = (seconds, extraDays = 0) => {
+        const date = new Date(seconds * 1000);
+        const lastDay = new Date(date.getFullYear(), date.getMonth(), 0).getDate();
+        return new Date(date.getFullYear(), date.getMonth() - 1, Math.min(date.getDate(), lastDay) + extraDays).getTime() / 1000;
+      };
+      query.set("compare_from", String(monthBefore(start)));
+      query.set("compare_to", String(monthBefore(end, 1)));
     }
     const data = await api(`/api/guilds/${state.guild.id}/analytics?${query}`);
     const previous = data.previous ?? {};

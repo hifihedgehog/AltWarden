@@ -19,7 +19,7 @@ In October 2026 the verification bot Double Counter said an attacker may have re
 |---|---|
 | Discord IDs, usernames and avatars of people who verified | Any IP address, email address, cookie value or fingerprint |
 | Attempt results and labels | Any Discord access or refresh token |
-| Keyed hashes they can't read without the key | A way to connect one person across two servers |
+| Keyed hashes they can't read without the key | A way to connect one person's hashes across two servers |
 
 The [security page](altwarden/web/static/security.html) lists how that works and where it stops working. A full takeover of the server, with both the database and the key, defeats the hashing. Browser checks run in the member's browser, so a custom client can forge them.
 
@@ -89,9 +89,9 @@ You need Python 3.11 or newer and a reverse proxy with HTTPS.
    python -m altwarden --public-url https://your.site --port 8892
    ```
    It listens on `127.0.0.1` and downloads its network lists on the first run. `altwarden.service` is a hardened systemd unit.
-4. Point your proxy at that port, pass the client address in `X-Forwarded-For`, and **turn off the proxy's access log or remove the client address from it**. Otherwise raw addresses end up in your web logs.
+4. Point your proxy at that port, have it add the client address as the last value of `X-Forwarded-For`, which is the only value AltWarden reads, and **turn off the proxy's access log or remove the client address from it**. Otherwise raw addresses end up in your web logs.
 
-Run the tests with `python -m unittest discover -s tests`. `python scripts/browser_check.py` drives the real pages in headless Edge or Chrome. `python scripts/detector_controls.py` and `python scripts/engine_controls.py` run the browser checks on real Chromium, Firefox and WebKit, clean and with what each check should catch.
+Run the tests with `python -m unittest discover -s tests`. `python scripts/browser_check.py` drives the real pages in headless Edge or Chrome, and changes every control on the Rules, Messages and Access pages to prove it saves. `python scripts/detector_controls.py` and `python scripts/engine_controls.py` run the browser checks on real Chromium, Firefox and WebKit, clean and with what each check should catch.
 
 ## Commands
 

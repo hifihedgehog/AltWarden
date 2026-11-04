@@ -28,6 +28,11 @@ URL = f"http://127.0.0.1:{PORT}/help"
 CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 QUIET = {"dom.webdriver.enabled": False}  # a person's Firefox reports false here, and automation reports true
 REWRITE = "const real = Function.prototype.toString; Function.prototype.toString = function () { return real.call(this); };"
+OWN_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+NO_WEBDRIVER = "delete Navigator.prototype.webdriver;"
+PROXY_CORES = """const real = Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency');
+Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', { ...real, get: new Proxy(real.get, { apply: () => 4 }) });"""
+STAND_IN_CORES = "Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', { get() { return 4; }, configurable: true });"
 COLLECT = """async () => {
     for (const src of ['/static/vendor/fingerprintjs-5.3.0.min.js', '/static/vendor/detectincognito-1.9.0.min.js']) {
         await new Promise((done) => { const s = document.createElement('script'); s.src = src; s.onload = done; s.onerror = done; document.head.append(s); });
@@ -108,6 +113,11 @@ async def main():
         await collect(webkit, "WebKit, clean. Playwright's build says Mac on Windows, so its system flag is an artifact")
         await collect(webkit, "WebKit, rewritten toString: tamper score should rise", inject=REWRITE)
         await collect(webkit, "WebKit pretending to be Chrome: should be a fake identity", user_agent=CHROME_UA, expect="fake_ua")
+        for label, launcher, prefs in (("Firefox", firefox, QUIET), ("WebKit", webkit, None)):
+            await collect(launcher, f"{label}, webdriver set on the object: should be automated", prefs=prefs, inject=OWN_WEBDRIVER, expect="automated")
+            await collect(launcher, f"{label}, cores wrapped in a Proxy: should be anti-detect", prefs=prefs, inject=PROXY_CORES, expect="antidetect")
+            await collect(launcher, f"{label}, cores replaced by a stand-in: should be anti-detect", prefs=prefs, inject=STAND_IN_CORES, expect="antidetect")
+        await collect(firefox, "Firefox, webdriver removed: should be automated", prefs=QUIET, inject=NO_WEBDRIVER, expect="automated")
     await runner.cleanup()
 
 

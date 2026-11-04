@@ -14,29 +14,28 @@ import math
 import re
 import socket
 import time
-from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import web
 from aiohttp.resolver import ThreadedResolver
+from yarl import URL
 
 from .. import access, analytics, catalog, health, notices, settings as settings_module
 from ..crypto import new_token, token_hash
 from ..engine import bypass_options
-from ..ports import MemberInfo
+from ..ports import DiscordUnavailable, MemberInfo
 from ..service import Service
-from .app import FLOW_COOKIE, FLOW_SECONDS, STATIC, client_ip, csrf_ok, current_session, json_error, set_cookie
+from .app import ADMINISTRATOR, FLOW_COOKIE, FLOW_SECONDS, MANAGE_GUILD, SNOWFLAKE, STATIC, client_ip, csrf_ok, current_session, json_error, read_json, set_cookie
 
 log = logging.getLogger("altwarden.api")
 
-ADMINISTRATOR = 1 << 3
-MANAGE_GUILD = 1 << 5
 WEBHOOK_EVENTS = ("member.verified", "member.failed", "appeal.opened", "appeal.decided", "raid.started", "raid.ended")
 MAX_WEBHOOKS = 5
 MAX_API_KEYS = 5
 BYPASS_NOTIFY = ("both", "dm", "channel", "none")
 COMMAND_SCOPES = ["identify", "applications.commands.permissions.update"]
 MAX_COMMAND_OVERRIDES = 100  # Discord's limit per command
+COULD_NOT_POST = "Saved, but AltWarden couldn't post in that channel. Look at the Health page, then press Post it again on the Messages page."
 
 
 class PublicResolver(ThreadedResolver):
@@ -56,10 +55,17 @@ class PublicResolver(ThreadedResolver):
 
 def webhook_problem(url: str) -> str | None:
     """Why this address can't take webhooks, or None. An IP literal skips the resolver, so it stops here."""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").rstrip(".").lower()
+    try:
+        parts = URL(url)
+        host = (parts.raw_host or "").rstrip(".").lower()
+    except (TypeError, ValueError):
+        return "Use an https address with a public host name."
     if parts.scheme != "https" or not host or host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".intranet")):
         return "Use an https address with a public host name."
+    # A last label of digits or 0x hex is an address in disguise, such as 2130706433 or 127.1, and it
+    # would reach the network without passing through the resolver's check.
+    if re.fullmatch(r"\d+|0x[0-9a-f]*", host.rsplit(".", 1)[-1]):
+        return "Use a host name, not an IP address."
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -75,7 +81,7 @@ def _whole(value, low: int, high: int, fallback: int) -> int:
     """A whole number from an untrusted request, kept in range."""
     try:
         return max(low, min(high, int(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return fallback
 
 
@@ -110,12 +116,18 @@ async def _guard(request: web.Request, page: str, level: str = "view"):
     document = await service.get_settings(guild_id)
     if document is None:
         document = settings_module.defaults()
-    rule = settings_module.page_rule(document, page, level)
-    if level == "edit" and not access.allowed(rule, viewer):
+    # A page with nothing to edit has no edit rule, so it can't let anyone in that way.
+    can_edit = "edit" in settings_module.PAGE_DEFAULTS.get(page, {}) and access.allowed(settings_module.page_rule(document, page, "edit"), viewer)
+    if level == "edit" and not can_edit:
         return json_error(403, "You can view this page but not change it.")
-    if level == "view" and not access.allowed(rule, viewer) and not access.allowed(settings_module.page_rule(document, page, "edit"), viewer):
+    if level == "view" and not can_edit and not access.allowed(settings_module.page_rule(document, page, "view"), viewer):
         return json_error(403, "You don't have access to this page.")
     return session, document, viewer
+
+
+def _rules_view(document: dict) -> dict:
+    """The Rules page's copy of the settings. Who can do what belongs to the Access page, under its own rule."""
+    return {key: value for key, value in document.items() if key != "permissions"}
 
 
 def _pages_for(document: dict, viewer: access.Viewer) -> dict:
@@ -139,10 +151,14 @@ async def me(request: web.Request) -> web.Response:
         can_invite = guild["owner"] or bool(bits & (ADMINISTRATOR | MANAGE_GUILD))
         reachable = False
         if present:
-            viewer = await _viewer(service, session, guild["id"])
-            if viewer is not None:
-                document = await service.get_settings(guild["id"]) or settings_module.defaults()
-                reachable = any(entry["view"] for entry in _pages_for(document, viewer).values())
+            try:
+                viewer = await _viewer(service, session, guild["id"])
+            except DiscordUnavailable:
+                reachable = True  # one server's bad moment mustn't cost the whole list, and its own page says what's wrong
+            else:
+                if viewer is not None:
+                    document = await service.get_settings(guild["id"]) or settings_module.defaults()
+                    reachable = any(entry["view"] for entry in _pages_for(document, viewer).values())
         if reachable or can_invite:
             servers.append({"id": guild["id"], "name": guild["name"], "icon": guild["icon"], "present": present, "reachable": reachable})
     servers.sort(key=lambda item: (not item["present"], item["name"].lower()))
@@ -208,6 +224,13 @@ async def _any_page(request: web.Request):
     return session, document, viewer
 
 
+async def _no_guild(service: Service, guild_id: str) -> web.Response:
+    """Why a server can't be read. Nothing is saved either way, because its roles and channels can't be checked."""
+    if await service.port.guild_loading(guild_id):
+        return json_error(503, "Discord is still loading this server, so nothing was saved. Try again in a moment.")
+    return json_error(404, "AltWarden isn't in that server.")
+
+
 async def setup(request: web.Request) -> web.Response:
     guarded = await _guard(request, "settings", "edit")
     if isinstance(guarded, web.Response):
@@ -222,13 +245,13 @@ async def setup(request: web.Request) -> web.Response:
         return json_error(400, found[0])
     guild = await service.port.guild(_gid(request))
     if guild is None:
-        return json_error(404, "AltWarden isn't in that server.")
-    refused = health.role_refusals(guild, None, updated, viewer)
+        return await _no_guild(service, _gid(request))
+    refused = health.role_refusals(guild, None, updated, viewer) + health.channel_refusals(guild, None, updated)
     if refused:
         return json_error(400, refused[0]["text"])
     await service.save_settings(_gid(request), updated, actor_id=session["user_id"], actor_name=session["username"], setup_done=True)
-    await request.app["post_message"](_gid(request), "verification")
-    return web.json_response({"ok": True})
+    posted = await request.app["post_message"](_gid(request), "verification")
+    return web.json_response({"ok": True, "problem": None if posted is not False else COULD_NOT_POST})
 
 
 async def settings_get(request: web.Request) -> web.Response:
@@ -236,7 +259,7 @@ async def settings_get(request: web.Request) -> web.Response:
     if isinstance(guarded, web.Response):
         return guarded
     _, document, viewer = guarded
-    return web.json_response({"settings": document, "paused": settings_module.paused_checks(document),
+    return web.json_response({"settings": _rules_view(document), "paused": settings_module.paused_checks(document),
                               "can_edit": access.allowed(settings_module.page_rule(document, "settings", "edit"), viewer)})
 
 
@@ -255,22 +278,24 @@ async def settings_put(request: web.Request) -> web.Response:
     incoming["appearance"] = document["appearance"]
     found = settings_module.problem_items(incoming)
     guild = await service.port.guild(guild_id)
-    if guild is not None:
-        found += health.role_refusals(guild, document, incoming, viewer)
+    if guild is None:
+        return await _no_guild(service, guild_id)
+    found += health.role_refusals(guild, document, incoming, viewer) + health.channel_refusals(guild, document, incoming)
     if found:
         return json_error(400, found[0]["text"], problems=[entry["text"] for entry in found], items=found)
     before = json.dumps(document["core"]["channel"]), json.dumps(document["core"]["help_desk"]["enabled"])
     changes = await service.save_settings(guild_id, incoming, actor_id=session["user_id"], actor_name=session["username"])
     after = json.dumps(incoming["core"]["channel"]), json.dumps(incoming["core"]["help_desk"]["enabled"])
+    posted = True
     if before != after:
-        await request.app["post_message"](guild_id, "verification")
+        posted = await request.app["post_message"](guild_id, "verification") is not False
     old_pot, new_pot = document["honeypot"], incoming["honeypot"]
     if new_pot["enabled"] and (not old_pot["enabled"] or new_pot["channel"] != old_pot["channel"]):
-        await request.app["post_message"](guild_id, "honeypot")
+        posted = await request.app["post_message"](guild_id, "honeypot") is not False and posted
     await service.warn_if_broken(guild_id, incoming, [module for module, old, new in (
         ("help_desk", document["core"]["help_desk"], incoming["core"]["help_desk"]), ("honeypot", old_pot, new_pot)) if old != new])
     return web.json_response({"ok": True, "changes": len(changes), "paused": settings_module.paused_checks(incoming),
-                              "settings": await service.get_settings(guild_id)})
+                              "problem": None if posted else COULD_NOT_POST, "settings": _rules_view(await service.get_settings(guild_id))})
 
 
 async def apply_preset(request: web.Request) -> web.Response:
@@ -280,7 +305,7 @@ async def apply_preset(request: web.Request) -> web.Response:
     _, document, _ = guarded
     body = await _body(request)
     try:
-        return web.json_response({"settings": settings_module.apply_preset(settings_module.normalize(body.get("settings", document)), body.get("preset"))})
+        return web.json_response({"settings": _rules_view(settings_module.apply_preset(settings_module.normalize(body.get("settings", document)), body.get("preset")))})
     except ValueError:
         return json_error(400, "That preset doesn't exist.")
 
@@ -309,7 +334,7 @@ async def import_settings(request: web.Request) -> web.Response:
     _, document, _ = guarded
     body = await _body(request)
     try:
-        return web.json_response({"settings": settings_module.import_code(document, str(body.get("code", "")))})
+        return web.json_response({"settings": _rules_view(settings_module.import_code(document, str(body.get("code", ""))))})
     except ValueError as exc:
         return json_error(400, str(exc))
 
@@ -351,8 +376,8 @@ async def members_list(request: web.Request) -> web.Response:
     if status in ("verified", "pending", "approved"):
         where += " AND m.status = ?"
         args.append(status)
-    total = await service.db.scalar(f"SELECT COUNT(*) FROM members m WHERE {where}", args)
-    rows = await service.db.all(
+    total = (await service.db.read_all(f"SELECT COUNT(*) AS total FROM members m WHERE {where}", args))[0]["total"]
+    rows = await service.db.read_all(
         f"SELECT m.user_id, m.username, m.avatar, m.status, m.method, m.verified_at, m.fails, "
         f"(SELECT MAX(at) FROM attempts a WHERE a.guild_id = m.guild_id AND a.user_id = m.user_id) AS last_at, "
         f"(SELECT check_id FROM attempts a WHERE a.guild_id = m.guild_id AND a.user_id = m.user_id AND a.outcome = 'failed' ORDER BY at DESC LIMIT 1) AS last_check "
@@ -606,14 +631,15 @@ async def appeal_decide(request: web.Request) -> web.Response:
     guarded = await _guard(request, "appeals", "edit")
     if isinstance(guarded, web.Response):
         return guarded
-    session = guarded[0]
+    session, _, viewer = guarded
     service: Service = request.app["service"]
     body = await _body(request)
     decision = body.get("decision")
     if decision not in ("approve", "trust", "deny"):
         return json_error(400, "Pick a decision.")
     note = str(body["note"])[:500] if body.get("note") else None
-    problem = await service.decide_appeal(_gid(request), int(request.match_info["id"]), decision, session["user_id"], session["username"], note)
+    problem = await service.decide_appeal(_gid(request), int(request.match_info["id"]), decision, session["user_id"], session["username"], note,
+                                          can_unban=viewer.is_admin or "ban_members" in viewer.permissions)
     return json_error(400, problem) if problem else web.json_response({"ok": True})
 
 
@@ -717,8 +743,8 @@ async def public_member(request: web.Request) -> web.Response:
         return json_error(401, "That key isn't valid for this server.")
     await service.db.run("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?", (time.time(), token_hash(key)))
     record = await service.db.member(_gid(request), request.match_info["uid"])
-    return web.json_response({"verified": bool(record and record["status"] == "verified"),
-                              "verified_at": record["verified_at"] if record else None})
+    verified = bool(record and record["status"] == "verified") and not await service.db.is_banned(_gid(request), request.match_info["uid"])
+    return web.json_response({"verified": verified, "verified_at": record["verified_at"] if verified else None})
 
 
 async def send_webhooks(app: web.Application, guild_id: str, event: str, payload: dict) -> None:
@@ -744,10 +770,7 @@ async def send_webhooks(app: web.Application, guild_id: str, event: str, payload
 
 
 async def _body(request: web.Request) -> dict:
-    try:
-        body = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        raise web.HTTPBadRequest(text="That request wasn't valid.")
+    body = await read_json(request)
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="That request wasn't valid.")
     return body
@@ -755,7 +778,7 @@ async def _body(request: web.Request) -> dict:
 
 def routes(app: web.Application) -> None:
     get, post, put, delete = app.router.add_get, app.router.add_post, app.router.add_put, app.router.add_delete
-    gid = "/api/guilds/{gid:\\d+}"
+    gid = f"/api/guilds/{{gid:{SNOWFLAKE}}}"
     get("/api/session", me)
     get("/api/catalog", catalog_view)
     get(gid, guild_view)
@@ -768,8 +791,8 @@ def routes(app: web.Application) -> None:
     post(f"{gid}/settings/import", import_settings)
     get(f"{gid}/analytics", analytics_view)
     get(f"{gid}/members", members_list)
-    get(f"{gid}/members/{{uid:\\d+}}", member_detail)
-    post(f"{gid}/members/{{uid:\\d+}}/{{action}}", member_action)
+    get(f"{gid}/members/{{uid:{SNOWFLAKE}}}", member_detail)
+    post(f"{gid}/members/{{uid:{SNOWFLAKE}}}/{{action}}", member_action)
     get(f"{gid}/health", health_view)
     get(f"{gid}/permissions", permissions_get)
     put(f"{gid}/permissions", permissions_put)
@@ -785,7 +808,7 @@ def routes(app: web.Application) -> None:
     delete(f"{gid}/webhooks/{{id:\\d+}}", webhook_delete)
     post(f"{gid}/keys", key_add)
     delete(f"{gid}/keys/{{id}}", key_delete)
-    get("/api/v1/guilds/{gid:\\d+}/members/{uid:\\d+}", public_member)
+    get(f"/api/v1/guilds/{{gid:{SNOWFLAKE}}}/members/{{uid:{SNOWFLAKE}}}", public_member)
 
 
 __all__ = ["MemberInfo", "PublicResolver", "client_ip", "notices", "routes", "send_webhooks", "webhook_problem"]

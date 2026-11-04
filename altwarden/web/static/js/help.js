@@ -1,6 +1,7 @@
 // Help for members, one page per thing that can stop them.
 import { loadLanguage, t } from "/static/js/i18n.js";
 
+window.pageStarted = true;  // tells loading-guard.js this script loaded
 const STAFF = "If that doesn't work, press Appeal, or ask the server's staff. They can verify you themselves or send you a link that skips this check.";
 
 const PAGES = {

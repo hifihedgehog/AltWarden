@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "リンクはプライベートウィンドウではなく、通常のウィンドウで開いてください。",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "ブラウザが、このサーバーに必要な情報をブロックしています。初期設定のブラウザを使ってください。",
   "This attempt scored too high on risk. Try another browser or connection.": "この試行のリスクスコアが高すぎます。別のブラウザか接続をお試しください。",
-  "Open the link on your own device, not inside a virtual machine.": "リンクは仮想マシンではなく、自分のデバイスで開いてください。",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "このサーバーは、エミュレートまたは改造されたスマホを受け付けていません。通常のデバイスを使ってください。"
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "リンクは仮想マシンではなく、自分のデバイスで開いてください。ご自分のコンピューターの場合は、ブラウザの設定でハードウェアアクセラレーションをオンにしてください。",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "このサーバーは、エミュレートまたは改造されたスマホを受け付けていません。通常のデバイスを使ってください。",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "前回の試行は通りませんでした。準備ができたら「もう一度試す」を押してください。",
+  "Please sign in again": "もう一度サインインしてください",
+  "This server's rules changed, so Discord needs to confirm your account again.": "このサーバーのルールが変更されたため、Discord でアカウントをもう一度確認する必要があります。",
+  "Actions you took as staff": "スタッフとして行った操作",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "何も削除されませんでした。サインインの期限が切れた可能性があります。もう一度サインインしてやり直してください。"
 }

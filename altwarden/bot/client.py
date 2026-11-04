@@ -1,6 +1,7 @@
 """The Discord client: events, slash commands, buttons, and the timers."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -12,12 +13,14 @@ from .. import __version__, access, health, notices, settings as settings_module
 from ..catalog import BY_ID, CHECK_IDS
 from ..engine import bypass_options
 from ..service import Result, Service
-from .gateway import Gateway
+from .gateway import FAILED, Gateway
 
 log = logging.getLogger("altwarden.bot")
 
 GREEN, RED, TEAL = notices.GREEN, notices.RED, notices.TEAL
 BYPASS_HOURS = (1, 6, 12, 24, 48, 72, 168)
+CATCH_UP_MARGIN = 120  # the last-online time is written once a minute, so look a little further back
+CATCH_UP_RETRY_SECONDS = 300
 BYPASS_NOTIFY = (("both", "DM and channel"), ("dm", "DM"), ("channel", "Channel"), ("none", "Don't notify"))
 
 
@@ -39,10 +42,16 @@ class AltWardenBot(discord.Client):
         self.gateway = Gateway(self)
         self.service: Service | None = None
         self.synced = False
+        self._catch_up_task: asyncio.Task | None = None
+        self._catch_up_again: float | None = None
+        self._missed_since: float | None = None  # join events from here on won't arrive, and need looking for
+        self._disconnected_at: float | None = None  # Discord may still replay these, if the session resumes
         self.on_ready_hook = None
         register_commands(self)
 
     async def setup_hook(self) -> None:
+        # Read before the timers start, because they keep this time current.
+        self._missed_since = await self.service.db.get_meta("last_online")
         self.minute_timer.start()
         self.hour_timer.start()
 
@@ -52,13 +61,99 @@ class AltWardenBot(discord.Client):
             if await self.service.db.guild(str(guild.id)) is None:
                 await self.service.db.save_settings(str(guild.id), settings_module.defaults(), setup_done=False)
             await self.service.db.set_guild_field(str(guild.id), "left_at", None)
+        await self.service.db.mark_departed({str(guild.id) for guild in self.guilds})
+        since, self._missed_since = self._missed_since, None
+        if since is None:  # the very first start, with nothing to look for
+            if not self._walking() and self._disconnected_at is None:
+                await self.service.db.set_meta("last_online", time.time())
+        elif self._walking():
+            # Member lists are walked by ID, so a new gap means walking again once this one ends.
+            self._catch_up_again = since if self._catch_up_again is None else min(since, self._catch_up_again)
+        else:
+            self._catch_up_task = asyncio.ensure_future(self._catch_up(since - CATCH_UP_MARGIN))
         if not self.synced:
             await self.tree.sync()
             self.synced = True
 
+    def _walking(self) -> bool:
+        return self._catch_up_task is not None and not self._catch_up_task.done()
+
+    async def on_disconnect(self) -> None:
+        if self._disconnected_at is None:
+            self._disconnected_at = time.time()
+
+    async def on_connect(self) -> None:
+        """READY arrived, so this is a new session, and what happened while disconnected won't be replayed."""
+        if self._disconnected_at is not None:
+            self._missed_since = self._disconnected_at if self._missed_since is None else min(self._missed_since, self._disconnected_at)
+            self._disconnected_at = None
+
+    async def on_resumed(self) -> None:
+        self._disconnected_at = None  # Discord replays what a resumed session missed
+
+    async def _catch_up(self, since: float) -> None:
+        """Discord sends no join event for someone who joined while the bot was offline, so look for them.
+
+        Member lists come a thousand at a time, and discord.py keeps to Discord's rate limit, so this
+        runs in the background and takes a couple of minutes on a very large server. The last-online
+        time only moves once this is done, so a restart or a failure partway through loses nothing.
+        """
+        waiting = list(self.guilds)
+        while True:
+            failed = []
+            for guild in waiting:
+                try:
+                    await self._catch_up_in(guild, since)
+                except Exception:
+                    log.exception("Couldn't check for joins while offline in %s. Trying again in a few minutes.", guild.id)
+                    failed.append(guild)
+            if self._catch_up_again is not None:
+                since = min(since, self._catch_up_again - CATCH_UP_MARGIN)
+                self._catch_up_again = None
+                waiting = list(self.guilds)
+                continue
+            # Only a server AltWarden is still in can be retried.
+            waiting = [guild for guild in failed if self.get_guild(guild.id) is not None]
+            if not waiting:
+                break
+            await asyncio.sleep(CATCH_UP_RETRY_SECONDS)
+        if self._disconnected_at is None:  # if the gateway dropped meanwhile, the next ready looks again from that moment
+            await self.service.db.set_meta("last_online", time.time())
+
+    async def _catch_up_in(self, guild: discord.Guild, since: float) -> None:
+        guild_id = str(guild.id)
+        if not await self.service.is_set_up(guild_id):
+            return
+        found = 0
+        async for member in guild.fetch_members(limit=None):
+            joined = member.joined_at
+            if member.bot or joined is None or joined.timestamp() < since:
+                continue
+            record = await self.service.db.member(guild_id, str(member.id))
+            # The slack is for this machine's clock and Discord's disagreeing about a join already handled.
+            if record is not None and (record["joined_at"] or 0) + CATCH_UP_MARGIN >= joined.timestamp():
+                continue
+            try:
+                await self.service.on_join(self.gateway.info(member), catching_up=True)
+                found += 1
+            except Exception:
+                log.exception("Couldn't handle a join while offline in %s", guild_id)  # one member mustn't cost everyone after them
+        if found:
+            log.info("Caught up on %d joins in %s", found, guild_id)
+
+    async def close(self) -> None:
+        self.minute_timer.cancel()  # first, so the last-online time can't move past a walk that's being cut short
+        self.hour_timer.cancel()
+        if self._catch_up_task is not None:
+            self._catch_up_task.cancel()
+        await super().close()
+
     @tasks.loop(minutes=1)
     async def minute_timer(self) -> None:
         try:
+            # Held still while offline and during a catch-up, so what wasn't checked yet still gets checked after a restart.
+            if self._missed_since is None and self._disconnected_at is None and not self._walking():
+                await self.service.db.set_meta("last_online", time.time())
             await self.service.tick()
         except Exception:
             log.exception("Minute timer failed")
@@ -96,9 +191,11 @@ class AltWardenBot(discord.Client):
     async def on_member_join(self, member: discord.Member) -> None:
         await self.service.on_join(self.gateway.info(member))
 
-    async def on_member_remove(self, member: discord.Member) -> None:
-        self.gateway.forget_member(str(member.guild.id), str(member.id))
-        await self.service.on_leave(str(member.guild.id), str(member.id))
+    async def on_raw_member_remove(self, payload: discord.RawMemberRemoveEvent) -> None:
+        """The raw event, because the plain one only fires for members in the cache, and most aren't."""
+        guild_id, user_id = str(payload.guild_id), str(payload.user.id)
+        self.gateway.forget_member(guild_id, user_id)
+        await self.service.on_leave(guild_id, user_id)
 
     async def on_member_ban(self, guild: discord.Guild, user: discord.User) -> None:
         await self.service.on_ban(str(guild.id), str(user.id))
@@ -107,8 +204,8 @@ class AltWardenBot(discord.Client):
         await self.service.on_unban(str(guild.id), str(user.id))
 
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None or message.author == self.user:
-            return
+        if message.guild is None or message.author == self.user or message.is_system():
+            return  # a pin notice or a join message isn't a post, and it would be blamed on whoever caused it
         settings = await self.service.get_settings(str(message.guild.id))
         if settings is None or not settings["honeypot"]["enabled"]:
             return
@@ -169,7 +266,8 @@ class AltWardenBot(discord.Client):
             await reply(interaction, "You don't have access to appeals.")
             return
         await interaction.response.defer(ephemeral=True)
-        problem = await self.service.decide_appeal(str(interaction.guild.id), int(appeal_id), decision, str(interaction.user.id), interaction.user.name)
+        problem = await self.service.decide_appeal(str(interaction.guild.id), int(appeal_id), decision, str(interaction.user.id), interaction.user.name,
+                                                   can_unban=viewer.is_admin or "ban_members" in viewer.permissions)
         await interaction.followup.send(problem or "Done.", ephemeral=True)
 
     # --- posting ----------------------------------------------------------------------------
@@ -194,7 +292,7 @@ class AltWardenBot(discord.Client):
             field = "honeypot_message_id"
         if not channel_id:
             return False
-        message_id = await self.gateway.send(channel_id, notice)
+        message_id = await self.gateway.send(channel_id, notice, guild_id=guild_id)
         if message_id is None:
             return False  # The old copy stays up, so a failed repost can't leave the server with no Verify button.
         await self._remove_post(row[field])
@@ -231,10 +329,14 @@ def result_embed(result: Result) -> discord.Embed:
 
 
 async def reply(interaction: discord.Interaction, text: str) -> None:
-    if interaction.response.is_done():
-        await interaction.followup.send(text, ephemeral=True)
-    else:
-        await interaction.response.send_message(text, ephemeral=True)
+    """Answer however the interaction allows. Its token dies after three seconds unanswered, and nothing can be done then."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+    except FAILED as exc:
+        log.warning("Couldn't answer an interaction: %s", exc)
 
 
 async def allowed(bot: AltWardenBot, interaction: discord.Interaction, command: str) -> bool:
@@ -347,7 +449,10 @@ def register_commands(bot: AltWardenBot) -> None:
         document = await bot.service.get_settings(guild_id) or settings_module.defaults()
         document = {**document, "core": {**document["core"], "verified_role": str(role.id), "channel": str(channel.id)}}
         await bot.service.save_settings(guild_id, document, actor_id=str(interaction.user.id), actor_name=interaction.user.name, setup_done=True)
-        await bot.post_message(guild_id, "verification")
+        if not await bot.post_message(guild_id, "verification"):
+            await interaction.followup.send(f"Saved, but AltWarden couldn't post in {channel.mention}. Give it View Channel, Send Messages and Embed Links there, "
+                                            "then run /post-message.", ephemeral=True)
+            return
         await interaction.followup.send(f"Done. Verification is on in {channel.mention}, using the Standard rules.\n"
                                         f"Fine-tune it at {bot.service.public_url}/dashboard/{guild_id}", ephemeral=True)
 
@@ -435,6 +540,7 @@ def register_commands(bot: AltWardenBot) -> None:
         document = await ready(bot, interaction)
         if document is None:
             return
+        await interaction.response.defer(ephemeral=True)  # looking up the member can take longer than Discord waits
         member = await bot.gateway.member(guild_id, str(user.id))
         if member is None:
             await reply(interaction, "That person isn't in the server.")
@@ -446,11 +552,12 @@ def register_commands(bot: AltWardenBot) -> None:
         if not options:
             await reply(interaction, "No checks are on, so there is nothing to skip.")
             return
-        await interaction.response.send_message(f"Choose what {user.mention}'s link skips.", view=BypassView(bot, user, options, hours, notify), ephemeral=True)
+        await interaction.followup.send(f"Choose what {user.mention}'s link skips.", view=BypassView(bot, user, options, hours, notify), ephemeral=True)
 
     async def do_lookup(interaction: discord.Interaction, user: discord.abc.User) -> None:
         if not await allowed(bot, interaction, "lookup"):
             return
+        await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
         service = bot.service
         record = await service.db.member(guild_id, str(user.id))
@@ -495,6 +602,7 @@ def register_commands(bot: AltWardenBot) -> None:
     async def trust_accounts(interaction: discord.Interaction, first: discord.User, second: discord.User) -> None:
         if not await allowed(bot, interaction, "trust-accounts"):
             return
+        await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
         await bot.service.db.trust_pair(guild_id, str(first.id), str(second.id), str(interaction.user.id))
         await bot.service.db.add_audit(guild_id, "trust", actor_id=str(interaction.user.id), actor_name=interaction.user.name,
@@ -509,10 +617,9 @@ def register_commands(bot: AltWardenBot) -> None:
             return
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        if not guild.chunked:
-            await guild.chunk()
-        count = await bot.service.import_members(str(guild.id), [str(member.id) for member in role.members if not member.bot],
-                                                 str(interaction.user.id), interaction.user.name)
+        # Over REST, because discord.py doesn't notice when Discord rate limits a gateway request for the list, and would wait forever.
+        members = [str(member.id) async for member in guild.fetch_members(limit=None) if not member.bot and (role.is_default() or member.get_role(role.id) is not None)]
+        count = await bot.service.import_members(str(guild.id), members, str(interaction.user.id), interaction.user.name)
         await interaction.followup.send(f"Marked {count} members as verified. They won't be asked to verify.", ephemeral=True)
 
     @tree.command(name="raid", description="Turn raid mode on or off")

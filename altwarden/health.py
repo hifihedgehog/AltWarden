@@ -47,10 +47,14 @@ def needed_permissions(settings: dict) -> dict[str, list[str]]:
         actions = {check["action"]}
         if check_id == "alt_account":
             actions |= {check["alt_action"], check["main_action"], check["banned_alt_action"]}
+        if check_id == "geogate":
+            actions |= set(check["overrides"].values())
         if KICK in actions:
             kicks.append(BY_ID[check_id].name)
         if BAN in actions:
             bans.append(BY_ID[check_id].name)
+    if settings["raid"]["enabled"]:
+        kicks.append("Raid mode")  # a raid tightens account age and alt accounts to at least Kick
     pot = settings["honeypot"]
     if pot["enabled"]:
         if pot["action"] == "kick":
@@ -159,6 +163,26 @@ def feature_warnings(guild, settings: dict) -> dict[str, list[str]]:
         if issue.get("feature"):
             found.setdefault(issue["feature"], []).append(f"**{issue['title']}**\n{issue['fix']}")
     return found
+
+
+def _chosen_channels(settings: dict) -> list[tuple[str, str | None, str]]:
+    """Channels AltWarden posts in, with a label and the setting that holds each one."""
+    core = settings["core"]
+    return [("Verification channel", core["channel"], "core"), ("Appeals channel", settings["appeals"]["channel"], "appeals"),
+            ("Honeypot channel", settings["honeypot"]["channel"], "honeypot"),
+            *(("Logs channel", channel, "logs") for channel in core["logs"]["modules"].values())]
+
+
+def channel_refusals(guild, before: dict | None, after: dict) -> list[dict]:
+    """Newly chosen channels a save must refuse.
+
+    Discord's library finds a channel by ID across every server the bot is in, so without this one
+    server's owner could make AltWarden post, and ping, in another server.
+    """
+    old = {channel for _, channel, _ in _chosen_channels(before)} if before else set()
+    known = {channel["id"] for channel in guild.channels}
+    return [{"text": f"{label}: that channel isn't in this server.", "item": item}
+            for label, channel, item in _chosen_channels(after) if channel and channel not in old and channel not in known]
 
 
 def role_refusals(guild, before: dict | None, after: dict, viewer) -> list[dict]:

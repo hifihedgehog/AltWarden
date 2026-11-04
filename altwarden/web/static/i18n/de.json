@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "Öffne den Link in einem normalen Fenster, nicht in einem privaten.",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "Dein Browser blockiert die Details, die dieser Server braucht. Nutze einen Browser mit Standardeinstellungen.",
   "This attempt scored too high on risk. Try another browser or connection.": "Dieser Versuch hat einen zu hohen Risikowert. Probiere einen anderen Browser oder eine andere Verbindung.",
-  "Open the link on your own device, not inside a virtual machine.": "Öffne den Link auf deinem eigenen Gerät, nicht in einer virtuellen Maschine.",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "Dieser Server akzeptiert keine emulierten oder veränderten Handys. Nutze ein normales Gerät."
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "Öffne den Link auf deinem eigenen Gerät, nicht in einer virtuellen Maschine. Wenn das dein eigener Computer ist, schalte die Hardwarebeschleunigung in den Browsereinstellungen ein.",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "Dieser Server akzeptiert keine emulierten oder veränderten Handys. Nutze ein normales Gerät.",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "Dein letzter Versuch hat nicht geklappt. Drücke auf „Noch mal versuchen“, wenn du bereit bist.",
+  "Please sign in again": "Bitte melde dich noch einmal an",
+  "This server's rules changed, so Discord needs to confirm your account again.": "Die Regeln dieses Servers haben sich geändert, deshalb muss Discord dein Konto noch einmal bestätigen.",
+  "Actions you took as staff": "Deine Aktionen als Team-Mitglied",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "Es wurde nichts gelöscht. Deine Anmeldung ist vielleicht abgelaufen. Melde dich noch einmal an und versuche es erneut."
 }

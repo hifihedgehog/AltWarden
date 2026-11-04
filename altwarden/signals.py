@@ -13,7 +13,8 @@ The rules follow proven open implementations rather than guesses:
                  tools can rewrite, so a Pixel's model is compared with its graphics chip and its
                  Android version. A phone that changes nothing, or a jailbroken iPhone, stays unseen.
   engine check   BotD's eval length rule: 33 on Chromium, 37 on Gecko and WebKit.
-  developer tools devtools-detector's console timing on Chromium, devtools-detect's window gap elsewhere.
+  developer tools devtools-detector's console timing, on Chromium and Firefox. Side panels and vertical tabs
+                 make the same window gap as a docked panel, so the gap isn't used, and Safari has no test.
 
 A report comes from the member's own browser, so a determined attacker with a custom client can
 forge it. These rules raise the cost and catch ordinary tools. Server-side facts, such as the
@@ -149,6 +150,8 @@ class BrowserVerdict:
 def evaluate(report: dict, headers: dict) -> BrowserVerdict:
     """Turn one untrusted report into a verdict. Every field is optional and type-checked."""
     report = _dict(report)
+    # Header names keep whatever case the browser and proxy sent. Over HTTP/2 that's lower case.
+    headers = {str(name).lower(): value for name, value in headers.items()}
     verdict = BrowserVerdict()
     nav = _dict(report.get("nav"))
     uad = _dict(report.get("uad"))
@@ -164,7 +167,7 @@ def evaluate(report: dict, headers: dict) -> BrowserVerdict:
     privacy = _dict(report.get("privacy"))
 
     ua = _text(nav.get("ua"), 500)
-    header_ua = _text(headers.get("User-Agent"), 500)
+    header_ua = _text(headers.get("user-agent"), 500)
     renderer = _text(gpu.get("renderer"))
     claimed_os = os_family(ua) or os_family(header_ua)
     verdict.os = claimed_os
@@ -173,6 +176,7 @@ def evaluate(report: dict, headers: dict) -> BrowserVerdict:
     lied_apis = [name for name in lies.get("apis", []) if isinstance(name, str)][:64] if isinstance(lies.get("apis"), list) else []
     lie_total = int(_number(lies.get("total"), 0) or 0)
 
+    _check_report_exists(verdict, ua, header_ua, eng)
     _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis)
     _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, worker, claimed_os)
     _check_antidetect(verdict, canvas, worker, nav, gpu, lied_apis, tz, privacy, engine_of(ua))
@@ -186,18 +190,38 @@ def evaluate(report: dict, headers: dict) -> BrowserVerdict:
         verdict.private = True
         verdict.note("private", "private window")
 
-    _fingerprints(verdict, report, nav, scr, gpu, tz, claimed_os, renderer)
+    _fingerprints(verdict, report, nav, scr, gpu, tz, claimed_os, renderer, mobile)
     verdict.bot_score = _bot_score(verdict, report)
     return verdict
 
 
-def _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis) -> None:
-    if bot.get("bot") is True:
+def _check_report_exists(verdict, ua, header_ua, eng) -> None:
+    """The collector always sends these two, so a request without them never came from the page."""
+    if not ua or _number(eng.get("evalLen")) is None:
         verdict.automated = True
-        verdict.note("automated", f"BotD: {_text(bot.get('botKind'), 40) or 'unknown'}")
+        verdict.note("automated", "no browser report")
+    if header_ua and not header_ua.startswith("Mozilla/"):
+        verdict.automated = True
+        verdict.note("automated", "not a browser")
+
+
+def _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis) -> None:
+    fired = [name for name in bot.get("fired", []) if isinstance(name, str)] if isinstance(bot.get("fired"), list) else []
+    # A desktop Chrome set to download PDFs has no plugins, which BotD reads as headless. If nothing
+    # else fired and the browser says its PDF viewer is off, that's all this is.
+    download_pdfs = fired == ["detectPluginsLengthInconsistency"] and nav.get("pdf") is False
+    if bot.get("bot") is True and not download_pdfs:
+        verdict.automated = True
+        kind = _text(bot.get("botKind"), 30)
+        verdict.note("automated", f"BotD: {kind if re.fullmatch(r'[A-Za-z_]+', kind) else 'unknown'}")
     if nav.get("webdriver") is True:
         verdict.automated = True
         verdict.note("automated", "webdriver flag")
+    # CreepJS's rule: a browser new enough to have this CSS feature always has this property. The usual way
+    # to hide automation removes it. Kept to Chromium and Firefox, because Safari can't be tested without a driver.
+    if nav.get("modern") is True and engine_of(ua) in ("blink", "gecko") and nav.get("webdriver") is None:
+        verdict.automated = True
+        verdict.note("automated", "webdriver flag removed")
     if "Navigator.webdriver" in lied_apis:
         verdict.automated = True
         verdict.note("automated", "webdriver flag hidden")
@@ -208,11 +232,12 @@ def _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis) -> No
 
 
 def _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, worker, claimed_os) -> None:
-    if ua and header_ua and ua != header_ua:
+    # Brave pads its user agent with spaces, and only in some of these places.
+    if ua and header_ua and ua.strip() != header_ua.strip():
         verdict.fake_ua = True
         verdict.note("fake_ua", "page and request disagree")
     worker_ua = _text(worker.get("ua"), 500)
-    if ua and worker_ua and ua != worker_ua:
+    if ua and worker_ua and ua.strip() != worker_ua.strip():
         verdict.fake_ua = True
         verdict.note("fake_ua", "page and worker disagree")
 
@@ -225,7 +250,7 @@ def _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, wo
     if claimed_os and platform_os and claimed_os != platform_os and (claimed_os, platform_os) not in compatible:
         verdict.fake_ua = True
         verdict.note("fake_ua", "agent and platform name different systems")
-    hint_os = os_family(_text(headers.get("Sec-CH-UA-Platform"), 40).strip('"'))
+    hint_os = os_family(_text(headers.get("sec-ch-ua-platform"), 40).strip('"'))
     uad_os = os_family(_text(uad.get("platform"), 40))
     for label, other in (("client hints", hint_os), ("user agent data", uad_os)):
         if claimed_os and other and claimed_os != other and (claimed_os, other) not in compatible:
@@ -239,11 +264,12 @@ def _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, wo
         if eval_length != expected:
             verdict.fake_ua = True
             verdict.note("fake_ua", "engine doesn't match agent")
-    needed_vendor = {"blink": "Google Inc.", "webkit": "Apple Computer, Inc.", "gecko": ""}.get(engine)
-    if needed_vendor is not None and isinstance(nav.get("vendor"), str) and "Edg/" not in ua and "OPR/" not in ua:
-        if nav["vendor"] != needed_vendor and not (engine == "blink" and nav["vendor"] in ("", "Google Inc.")):
-            verdict.fake_ua = True
-            verdict.note("fake_ua", "vendor doesn't match agent")
+    # Chromium browsers set this string as they like, so only another engine's name gives anything away.
+    vendor = nav.get("vendor")
+    if isinstance(vendor, str) and ((engine == "blink" and vendor.startswith("Apple")) or (engine == "webkit" and vendor != "Apple Computer, Inc.")
+                                    or (engine == "gecko" and vendor != "")):
+        verdict.fake_ua = True
+        verdict.note("fake_ua", "vendor doesn't match agent")
 
     hardware = gpu_os(renderer)
     if hardware == "windows" and claimed_os and claimed_os != "windows":
@@ -262,7 +288,7 @@ def _check_antidetect(verdict, canvas, worker, nav, gpu, lied_apis, tz, privacy,
     if worker:
         comparisons = (("cores", nav.get("cores"), worker.get("cores")),
                        ("memory", nav.get("memory"), worker.get("memory")),
-                       ("platform", nav.get("platform"), worker.get("platform")),
+                       ("platform", _apple_platform(nav.get("platform")), _apple_platform(worker.get("platform"))),
                        ("graphics", gpu.get("renderer"), worker.get("gpu")))
         for label, page_value, worker_value in comparisons:
             if page_value not in (None, "") and worker_value not in (None, "") and page_value != worker_value:
@@ -282,6 +308,11 @@ def _check_antidetect(verdict, canvas, worker, nav, gpu, lied_apis, tz, privacy,
     if offset is not None and expected is not None and offset != expected:
         verdict.antidetect = True
         verdict.note("antidetect", "clock and time zone disagree")
+
+
+def _apple_platform(value):
+    """An iPad in desktop mode says MacIntel on the page and iPad in a worker, so those count as one value."""
+    return "apple" if value in ("MacIntel", "iPad", "iPhone") else value
 
 
 def _check_tampering(verdict, lies, lied_apis, lie_total) -> None:
@@ -323,20 +354,11 @@ def _check_privacy(verdict, privacy, canvas, gpu, ua) -> None:
 def _check_devtools(verdict, tools, mobile, engine) -> None:
     if mobile:
         return  # phones have no docked panel, and their window gaps are browser toolbars
-    if engine == "blink":
-        # In real Edge the console test fired on none of 20 rounds with no debugger, and on 17 to 20
-        # with one attached, docked or not. Side panels and vertical tabs leave the same window gap
-        # as a docked panel, so on Chromium the gap proves nothing the console test can't.
-        if tools.get("timing") is True:
-            verdict.devtools = True
-            verdict.note("devtools", "console timing")
-        return
-    if tools.get("size") is True:
-        verdict.devtools = True
-        verdict.note("devtools", "window gap")
-    # Safari's inspector can't be detached in a test, so a quiet run can't be shown there, and a
-    # false alarm would turn away real members. Firefox stayed quiet on all 20 rounds.
-    if engine == "gecko" and tools.get("timing") is True:
+    # In real Edge the console test fired on none of 20 rounds with no debugger, and on 17 to 20 with one
+    # attached, docked or not. Firefox stayed quiet on all 20 rounds. Safari's inspector can't be detached
+    # in a test, so a quiet run can't be shown there, and a false alarm would turn away real members.
+    # Side panels and vertical tabs leave the same window gap as a docked panel, so the gap isn't used.
+    if engine in ("blink", "gecko") and tools.get("timing") is True:
         verdict.devtools = True
         verdict.note("devtools", "console timing")
 
@@ -390,13 +412,16 @@ def _check_device(verdict, renderer, uad, nav, mobile, claimed_os) -> None:
         verdict.note("emulated", "x86 processor on Android")
 
 
-def _fingerprints(verdict, report, nav, scr, gpu, tz, claimed_os, renderer) -> None:
+def _fingerprints(verdict, report, nav, scr, gpu, tz, claimed_os, renderer, mobile) -> None:
     fp = _dict(report.get("fp"))
     visitor = fp.get("id")
     if isinstance(visitor, str) and re.fullmatch(r"[0-9a-f]{16,64}", visitor):
         verdict.fingerprint = visitor
-    # Every iPhone of one model looks alike to a browser, so a match there is weak evidence.
-    verdict.weak_fingerprint = claimed_os == "ios"
+    # Phones and Chromebooks of one model look alike to a browser, so a match there is weak evidence.
+    # FingerprintJS rates its own identifier 0.4 on Android and 0.3 on phone Safari. An iPad in its
+    # default desktop mode says it's a Mac, and its touch screen is what gives it away.
+    ipad_as_mac = claimed_os == "mac" and (_number(nav.get("touch"), 0) or 0) > 1
+    verdict.weak_fingerprint = mobile or claimed_os == "chromeos" or ipad_as_mac
     # The device value leaves out anything one browser reports differently from another. It is
     # shared by every identical machine in a time zone, so alt matching gives it little weight.
     model = gpu_model(renderer)

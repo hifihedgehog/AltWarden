@@ -2,6 +2,7 @@
 import { dirtyKeys, discardAll, forgetAll, onChange, pagesClosed, saveAll } from "/static/dash/drafts.js";
 import { api, avatarUrl, dialog, field, h, iconUrl, segments, state } from "/static/dash/ui.js";
 
+window.pageStarted = true;  // tells loading-guard.js this script loaded
 const PAGES = [
   { id: "analytics", label: "Overview", load: () => import("/static/dash/analytics.js") },
   { id: "settings", label: "Rules", load: () => import("/static/dash/settings.js") },
@@ -147,7 +148,7 @@ function searchEntries() {
   for (const [id, label] of [["core", "Verification mode"], ["core", "Verified role"], ["core", "Verification channel"], ["unverified", "Unverified role"], ["autodm", "DM new members"],
     ["closeddms", "Ping when DMs are closed"], ["autokick", "Auto kick"], ["cooldown", "Cooldown"], ["rejoin", "Remember verified members"], ["reason", "Tell members why"],
     ["failopen", "Let members through if network data is missing"], ["external", "Outside VPN lookup"], ["direct", "Skip the start page"], ["logs", "Logs"], ["alerts", "Alerts"],
-    ["helpdesk", "Help desk"], ["honeypot", "Honeypot"], ["raid", "Raid mode"], ["appeals", "Appeals setup"], ["privacy", "Data retention"]]) {
+    ["helpdesk", "Help desk"], ["honeypot", "Honeypot"], ["raid", "Raid mode"], ["appeals", "Appeals setup"], ["retention", "Data retention"]]) {
     entries.push({ label, kind: "Setting", go: `/dashboard/${state.guild.id}/settings#${id}` });
   }
   if (state.guild.pages.permissions?.view) {

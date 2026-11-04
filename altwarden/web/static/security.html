@@ -18,8 +18,11 @@
       <tr><th>They would get</th><th>They would not get</th></tr>
       <tr><td>Discord IDs, usernames and avatars of people who verified</td><td>Any IP address, email address, cookie value or fingerprint</td></tr>
       <tr><td>Attempt results and labels</td><td>Any Discord access or refresh token</td></tr>
-      <tr><td>Keyed hashes they can't read without the key</td><td>A way to connect one person across two servers</td></tr>
+      <tr><td>Keyed hashes they can't read without the key</td><td>A way to connect one person's hashes across two servers</td></tr>
+      <tr><td>Webhook addresses and signing secrets, which are stored readable because signing needs them</td><td>API keys, which are stored as hashes</td></tr>
+      <tr><td>For staff signed in during the last 12 hours, the names of servers they can manage or share with AltWarden</td><td>The rest of their server list</td></tr>
     </table>
+    <p>Discord IDs are stored as they are, so a stolen database can show that one account has records in two servers. Hashes can't be connected that way.</p>
 
     <h2>How it's built</h2>
     <ul>
@@ -27,12 +30,14 @@
       <li>The master key lives in the process environment and never in the database or its backups.</li>
       <li>Discord tokens are revoked under RFC 7009 right after one read, so none exist at rest. Staff who save Discord's command permissions approve one write, and that token is revoked the same way.</li>
       <li>Verification links are stored as hashes, work for one member, and expire.</li>
-      <li>The sign-in state value is tied to the browser that started it.</li>
+      <li>The sign-in state value is tied to the browser that started it, and the check only runs in the browser that signed in, so a link sent to someone else is useless.</li>
       <li>Every page sends a strict Content Security Policy that allows scripts from this site only.</li>
       <li>The page that receives Discord's code loads nothing and redirects at once, as RFC 9700 section 4.2.4 advises.</li>
       <li>Browser libraries are copied into this site at fixed versions, so a compromised CDN can't reach members.</li>
       <li>No admin tools listen on public addresses. The application binds to the local machine behind a proxy.</li>
-      <li>Request logs are off in the application, and the site's access log records no client addresses or page paths.</li>
+      <li>Request logs are off in the application, its error log names the route and not the address, and the site's access log records no client addresses or page paths.</li>
+      <li>The application reads a member's address from the last value the proxy added, because a client can send forged lines ahead of it.</li>
+      <li>A server can only choose channels in that server, and a post is refused if a channel turns out to be somewhere else.</li>
       <li>The bot asks only for the permissions its features use. It doesn't need Administrator.</li>
     </ul>
 
@@ -40,8 +45,10 @@
     <ul>
       <li><strong>Browser checks can be forged.</strong> They run in the member's browser, so a custom client can report anything. They stop ordinary tools and raise the cost. Network, account and cookie-signature checks don't depend on that report.</li>
       <li><strong>A full takeover of the server defeats the hashing.</strong> Someone with both the database and the master key can test guesses against a hash. IPv4 has few enough addresses for that to work. Keeping the key separate protects against a stolen database or backup, which is how most leaks happen.</li>
-      <li><strong>A running process sees real addresses for a moment.</strong> They exist in memory during a request.</li>
+      <li><strong>A running process sees real addresses for a moment.</strong> They exist in memory during a request. The rate limiter keeps only hashes, under a key that dies with the process.</li>
       <li><strong>Lists go stale.</strong> VPN and country data is refreshed weekly, and new VPN servers can slip through until then.</li>
+      <li><strong>Safari has no developer tools check.</strong> Its inspector can't be tested without a driver attached, so a quiet run can't be shown, and a false alarm would turn away real members.</li>
+      <li><strong>Machines of one model look alike.</strong> A browser fingerprint alone never stops anyone by default, and on phones, tablets and Chromebooks it counts for little. Someone with two accounts on one phone is caught by the cookie, unless they clear it.</li>
       <li><strong>Root can't be read from a web page.</strong> No browser API reports it, and the services that do report it read it from a native app. The Modified phone check catches what rooting lets a phone do: pose as another model, or run firmware newer than the phone ever got. A rooted phone that changes neither passes, and so does a jailbroken iPhone.</li>
     </ul>
 

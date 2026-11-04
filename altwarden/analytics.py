@@ -1,6 +1,7 @@
 """Numbers for the dashboard, computed from the attempts table in the viewer's time zone."""
 from __future__ import annotations
 
+import asyncio
 import json
 import statistics
 import time
@@ -8,10 +9,12 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from .altmatch import RANK
 from .catalog import SEVERITY, WATCH
 
 BUCKETS = ((30, "<30s"), (60, "30s-1m"), (120, "1-2m"), (300, "2-5m"), (900, "5-15m"), (3600, "15m-1h"), (float("inf"), "1h+"))
 MAX_RANGE_DAYS = 400
+VERIFYING_SECONDS = 300
 
 
 def _zone(name: str | None):
@@ -22,11 +25,26 @@ def _zone(name: str | None):
 
 
 async def report(db, guild_id: str, start: float, end: float, zone_name: str | None = None) -> dict:
-    """Everything the Analytics page shows for one period."""
+    """Everything the Analytics page shows for one period.
+
+    A busy server can have hundreds of thousands of attempts, so this runs on its own thread and its
+    own connection, where members verifying don't wait for it.
+    """
+    return await asyncio.to_thread(_report, db, guild_id, start, end, zone_name)
+
+
+def _report(db, guild_id: str, start: float, end: float, zone_name: str | None) -> dict:
     start = max(start, end - MAX_RANGE_DAYS * 86400)
     zone = _zone(zone_name)
-    rows = await db.all("SELECT user_id, at, outcome, check_id, action, mode, seconds, bypassed FROM attempts "
-                        "WHERE guild_id = ? AND at >= ? AND at < ? ORDER BY at", (guild_id, start, end))
+    connection = db.reader()
+    try:
+        return _summarize(connection.execute("SELECT user_id, at, outcome, check_id, action, mode, seconds, bypassed FROM attempts "
+                                             "WHERE guild_id = ? AND at >= ? AND at < ? ORDER BY at", (guild_id, start, end)), start, end, zone)
+    finally:
+        connection.close()
+
+
+def _summarize(rows, start: float, end: float, zone) -> dict:
     daily: dict[str, Counter] = defaultdict(Counter)
     day = datetime.fromtimestamp(start, zone).date()
     last = datetime.fromtimestamp(end - 1, zone).date()
@@ -110,8 +128,13 @@ async def report(db, guild_id: str, start: float, end: float, zone_name: str | N
 
 
 async def verifying_now(db, guild_id: str) -> int:
-    return await db.scalar("SELECT COUNT(*) FROM sessions WHERE guild_id = ? AND state IN ('signed_in', 'checking') AND expires_at > ?",
-                           (guild_id, time.time())) or 0
+    """People in the middle of a check, or signed in within the last few minutes with no result yet.
+
+    Someone turned away keeps their link for a retry, and someone who walked away keeps it until it ends, and neither is verifying now.
+    """
+    now = time.time()
+    return await db.scalar("SELECT COUNT(*) FROM sessions WHERE guild_id = ? AND (state = 'checking' OR (state = 'signed_in' AND finished_at IS NULL AND signed_in_at > ?)) "
+                           "AND expires_at > ?", (guild_id, now - VERIFYING_SECONDS, now)) or 0
 
 
 async def preview(db, guild_id: str, rules: dict, days: int = 30) -> dict:
@@ -121,8 +144,12 @@ async def preview(db, guild_id: str, rules: dict, days: int = 30) -> dict:
     in Watch or stronger, when the attempt happened. The page says so.
     """
     since = time.time() - days * 86400
-    rows = await db.all("SELECT user_id, outcome, detail FROM attempts WHERE guild_id = ? AND at >= ? AND outcome IN ('passed', 'failed')",
-                        (guild_id, since))
+    rows = await db.read_all("SELECT user_id, outcome, detail FROM attempts WHERE guild_id = ? AND at >= ? AND outcome IN ('passed', 'failed')",
+                             (guild_id, since))
+    return await asyncio.to_thread(_replay, rows, rules, days)
+
+
+def _replay(rows: list[dict], rules: dict, days: int) -> dict:
     now_blocked = would_block = newly_blocked = newly_passed = 0
     by_check: Counter = Counter()
     for row in rows:
@@ -130,7 +157,7 @@ async def preview(db, guild_id: str, rules: dict, days: int = 30) -> dict:
         strongest = WATCH
         for finding in findings:
             check = rules["checks"].get(finding["check"], {})
-            if not check.get("enabled"):
+            if not check.get("enabled") or not _still_fires(finding, check):
                 continue
             action = _action_for(finding, check)
             if SEVERITY[action] > SEVERITY[strongest]:
@@ -147,8 +174,26 @@ async def preview(db, guild_id: str, rules: dict, days: int = 30) -> dict:
             "newly_blocked": newly_blocked, "newly_passed": newly_passed, "by_check": by_check.most_common()}
 
 
+def _still_fires(finding: dict, check: dict) -> bool:
+    """Whether a recorded finding would fire under the proposed limits. Findings keep the numbers they fired on."""
+    detail = finding.get("detail", {})
+    name = finding["check"]
+    if name == "threat":
+        return detail.get("bot_score", 0) >= check["bot_score"] or detail.get("suspect_score", 0) >= check["suspect_score"]
+    if name == "tampering":
+        return detail.get("score", 0) >= check["anomaly_score"]
+    if name == "account_age":
+        return detail.get("account_days", 0) < check["days"]
+    if name == "alt_account":
+        return RANK.get(detail.get("confidence"), 0) >= RANK.get(check["min_confidence"], RANK["likely"])
+    return True
+
+
 def _action_for(finding: dict, check: dict) -> str:
     if finding["check"] == "alt_account":
-        banned = finding.get("detail", {}).get("banned")
-        return check.get("banned_alt_action" if banned else "alt_action", WATCH)
+        detail = finding.get("detail", {})
+        if detail.get("banned"):
+            return check.get("banned_alt_action", WATCH)
+        # The account that verified first gets the main action, whichever of the two was verifying.
+        return check.get("main_action" if detail.get("earlier_account") or detail.get("other_is_main") is False else "alt_action", WATCH)
     return check.get("action", WATCH)

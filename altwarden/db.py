@@ -5,7 +5,9 @@ an email address, a cookie value or a Discord token, in this schema or in any JS
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -38,6 +40,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     opened_at REAL,
     finished_at REAL,
     auth_state_hash TEXT,
+    browser_hash TEXT,
+    signed_in_at REAL,
     account TEXT,
     nonce TEXT,
     pow_salt TEXT,
@@ -55,15 +59,18 @@ CREATE TABLE IF NOT EXISTS members (
     status TEXT NOT NULL DEFAULT 'pending',
     method TEXT,
     verified_at REAL,
+    first_verified_at REAL,
     joined_at REAL,
     kick_at REAL,
     fails INTEGER NOT NULL DEFAULT 0,
     last_fail_at REAL,
     limit_reached_at REAL,
     help_thread_id TEXT,
+    forget_on_unban INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS members_status ON members (guild_id, status);
+CREATE INDEX IF NOT EXISTS members_user ON members (user_id);
 CREATE INDEX IF NOT EXISTS members_kick ON members (kick_at);
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -81,6 +88,7 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 CREATE INDEX IF NOT EXISTS attempts_guild_time ON attempts (guild_id, at);
 CREATE INDEX IF NOT EXISTS attempts_member ON attempts (guild_id, user_id, at);
+CREATE INDEX IF NOT EXISTS attempts_user ON attempts (user_id);
 
 CREATE TABLE IF NOT EXISTS identifiers (
     guild_id TEXT NOT NULL,
@@ -188,6 +196,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at REAL NOT NULL,
     last_used_at REAL
 );
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value REAL NOT NULL
+);
 """
 
 
@@ -205,8 +217,33 @@ class Database:
         await self.conn.execute("PRAGMA synchronous=NORMAL")
         await self.conn.execute("PRAGMA foreign_keys=ON")
         await self.conn.execute("PRAGMA secure_delete=ON")
+        await self._add_missing_columns()
         await self.conn.executescript(SCHEMA)
+        # A check that was running when the process stopped can't finish now, so hand its link back.
+        await self.conn.execute("UPDATE sessions SET state = 'signed_in' WHERE state = 'checking'")
+        await self.conn.execute("UPDATE appeals SET status = 'open' WHERE status = 'deciding'")
+        # Rows from before this column existed. Without a date they wouldn't count as anyone who verified.
+        await self.conn.execute("UPDATE members SET first_verified_at = COALESCE(verified_at, joined_at, ?) WHERE first_verified_at IS NULL "
+                                "AND (status = 'verified' OR verified_at IS NOT NULL)", (time.time(),))
         await self.conn.commit()
+
+    async def _add_missing_columns(self) -> None:
+        """CREATE TABLE IF NOT EXISTS leaves an older table as it was, so give it whatever the schema has since added."""
+        model = sqlite3.connect(":memory:")
+        try:
+            model.executescript(SCHEMA)
+            tables = [row[0] for row in model.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+            wanted = {table: model.execute(f"PRAGMA table_info({table})").fetchall() for table in tables}
+        finally:
+            model.close()
+        for table, columns in wanted.items():
+            present = {row["name"] for row in await self.all(f"PRAGMA table_info({table})")}
+            if not present:
+                continue
+            for _, name, kind, not_null, default, _ in columns:
+                if name not in present:
+                    await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}" + (f" DEFAULT {default}" if default is not None else "")
+                                            + (" NOT NULL" if not_null else ""))
 
     async def close(self) -> None:
         if self.conn is not None:
@@ -243,6 +280,34 @@ class Database:
         row = await self.one(sql, args)
         return next(iter(row.values())) if row else None
 
+    async def run_many(self, sql: str, rows: list) -> None:
+        await self.conn.executemany(sql, rows)
+        await self.conn.commit()
+
+    def reader(self) -> sqlite3.Connection:
+        """A separate read-only connection, for slow staff pages. Make it on the thread that uses it.
+
+        One connection handles every member's verification, so a long read on it would make them wait.
+        """
+        connection = sqlite3.connect(f"{Path(self.path).resolve().as_uri()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    async def read_all(self, sql: str, args: Iterable[Any] = ()) -> list[dict]:
+        def fetch() -> list[dict]:
+            connection = self.reader()
+            try:
+                return [dict(row) for row in connection.execute(sql, tuple(args))]
+            finally:
+                connection.close()
+        return await asyncio.to_thread(fetch)
+
+    async def get_meta(self, key: str) -> float | None:
+        return await self.scalar("SELECT value FROM meta WHERE key = ?", (key,))
+
+    async def set_meta(self, key: str, value: float) -> None:
+        await self.run("INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+
     # --- guilds -----------------------------------------------------------------------------
 
     async def guild(self, guild_id: str) -> dict | None:
@@ -265,6 +330,12 @@ class Database:
             raise ValueError(field)
         await self.run(f"UPDATE guilds SET {field} = ? WHERE guild_id = ?", (value, guild_id))
 
+    async def mark_departed(self, present: set) -> None:
+        """A server that removed the bot while it was offline sent no event, so notice it by its absence."""
+        for row in await self.all("SELECT guild_id FROM guilds WHERE left_at IS NULL"):
+            if row["guild_id"] not in present:
+                await self.set_guild_field(row["guild_id"], "left_at", time.time())
+
     async def forget_guild(self, guild_id: str) -> None:
         """Remove every row for a server. Used by the uninstall command."""
         for table in ("sessions", "members", "attempts", "identifiers", "links", "trusted_pairs", "bans", "appeals",
@@ -286,12 +357,18 @@ class Database:
 
     async def update_member(self, guild_id: str, user_id: str, **fields: Any) -> None:
         allowed = {"status", "method", "verified_at", "kick_at", "fails", "last_fail_at", "limit_reached_at",
-                   "help_thread_id", "joined_at"}
+                   "help_thread_id", "joined_at", "forget_on_unban", "first_verified_at"}
         if not fields or not set(fields) <= allowed:
             raise ValueError(f"Unknown member fields: {set(fields) - allowed}")
         assignments = ", ".join(f"{name} = ?" for name in fields)
         await self.run(f"UPDATE members SET {assignments} WHERE guild_id = ? AND user_id = ?",
                        (*fields.values(), guild_id, user_id))
+
+    async def mark_verified(self, guild_id: str, user_id: str, method: str, *, when: float | None = None) -> None:
+        """A member got in. The first time is kept for good, because it decides which of two linked accounts is the main one."""
+        moment = when or time.time()
+        await self.run("UPDATE members SET status = 'verified', method = ?, verified_at = ?, first_verified_at = COALESCE(first_verified_at, ?), kick_at = NULL, "
+                       "fails = 0, limit_reached_at = NULL WHERE guild_id = ? AND user_id = ?", (method, moment, moment, guild_id, user_id))
 
     # --- identifiers ------------------------------------------------------------------------
 
@@ -361,7 +438,7 @@ class Database:
         now = time.time()
         removed = {
             "identifiers": await self.run("DELETE FROM identifiers WHERE expires_at <= ?", (now,)),
-            "sessions": await self.run("DELETE FROM sessions WHERE expires_at <= ?", (now - 86400,)),
+            "sessions": await self.run("DELETE FROM sessions WHERE expires_at <= ?", (now,)),
             "web_sessions": await self.run("DELETE FROM web_sessions WHERE expires_at <= ?", (now,)),
             "login_states": await self.run("DELETE FROM login_states WHERE expires_at <= ?", (now,)),
             "command_syncs": await self.run("DELETE FROM command_syncs WHERE expires_at <= ?", (now,)),
@@ -380,14 +457,22 @@ class Database:
         for guild_id, settings in settings_by_guild.items():
             privacy = settings["privacy"]
             removed["bans"] += await self.run("DELETE FROM bans WHERE guild_id = ? AND at < ?", (guild_id, now - max(privacy["banned_days"], 1) * 86400))
+            # Each hash's own date can be late: the setting may have come down since, or a softban may have
+            # extended it. So go by when it was last seen, except for accounts that are banned now.
+            not_banned = "AND user_id NOT IN (SELECT user_id FROM bans WHERE guild_id = ?)"
+            removed["identifiers"] += await self.run(f"DELETE FROM identifiers WHERE guild_id = ? AND kind = 'ip' AND last_seen < ? {not_banned}",
+                                                     (guild_id, now - privacy["ip_days"] * 86400, guild_id))
+            removed["identifiers"] += await self.run(f"DELETE FROM identifiers WHERE guild_id = ? AND kind != 'ip' AND last_seen < ? {not_banned}",
+                                                     (guild_id, now - privacy["identifier_days"] * 86400, guild_id))
             cutoff = now - privacy["attempt_days"] * 86400
             removed["attempts"] += await self.run("DELETE FROM attempts WHERE guild_id = ? AND at < ?", (guild_id, cutoff))
             removed["audit"] += await self.run("DELETE FROM audit WHERE guild_id = ? AND at < ?", (guild_id, cutoff))
-            removed["appeals"] += await self.run("DELETE FROM appeals WHERE guild_id = ? AND status != 'open' AND created_at < ?", (guild_id, cutoff))
+            removed["appeals"] += await self.run("DELETE FROM appeals WHERE guild_id = ? AND status NOT IN ('open', 'deciding') AND created_at < ?", (guild_id, cutoff))
             removed["links"] += await self.run("DELETE FROM links WHERE guild_id = ? AND at < ?", (guild_id, now - privacy["identifier_days"] * 86400))
             # A member who never verified and left no recent trace has nothing worth keeping.
             removed["members"] += await self.run(
-                "DELETE FROM members WHERE guild_id = ? AND status = 'pending' AND COALESCE(joined_at, 0) < ? AND help_thread_id IS NULL "
+                "DELETE FROM members WHERE guild_id = ? AND status = 'pending' AND MAX(COALESCE(joined_at, 0), COALESCE(last_fail_at, 0)) < ? "
+                "AND kick_at IS NULL AND help_thread_id IS NULL "
                 "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.guild_id = members.guild_id AND a.user_id = members.user_id) "
                 "AND NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.guild_id = members.guild_id AND i.user_id = members.user_id)",
                 (guild_id, cutoff))

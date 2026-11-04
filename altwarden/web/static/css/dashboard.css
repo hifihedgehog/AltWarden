@@ -202,7 +202,7 @@ table.list tr.click:hover { background: var(--bg-hover); }
 .bar-track { height: 10px; border-radius: 4px; background: var(--bg-sunken); overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 4px; background: var(--series-1); }
 .bar-fill.b { background: var(--series-2); }
-.heat { display: grid; grid-template-columns: 30px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: .72rem; color: var(--text-faint); }
+.heat { overflow-wrap: normal; display: grid; grid-template-columns: 30px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: .72rem; color: var(--text-faint); }
 .heat .cell { aspect-ratio: 1; border-radius: 3px; background: var(--bg-sunken); }
 .funnel-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-bottom: 8px; font-size: .88rem; }
 .funnel-row .bar-track { grid-column: 1 / -1; }

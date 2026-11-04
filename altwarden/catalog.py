@@ -118,10 +118,10 @@ PRESETS: dict[str, dict] = {
             "vpn": (True, WATCH, {}),
             "mobile_data": (False, WATCH, {}),
             "automation": (True, DENY, {}),
-            "antidetect": (True, DENY, {}),
+            "antidetect": (True, WATCH, {}),  # privacy extensions rewrite the same functions
             "tampering": (True, WATCH, {"anomaly_score": 50}),
             "fake_ua": (True, WATCH, {}),
-            "devtools": (True, WATCH, {}),
+            "devtools": (True, DENY, {}),  # closing the panel fixes it, and a script driving the browser looks the same
             "incognito": (True, WATCH, {}),
             "privacy": (False, WATCH, {}),
             "threat": (True, DENY, {"bot_score": 80, "suspect_score": 70}),
@@ -177,7 +177,7 @@ FAILURE_TEXT = {
     "incognito": "Open the link in a normal window, not a private one.",
     "privacy": "Your browser is blocking the details this server needs. Use a browser with default settings.",
     "threat": "This attempt scored too high on risk. Try another browser or connection.",
-    "vm": "Open the link on your own device, not inside a virtual machine.",
+    "vm": "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.",
     "rooted": "This server doesn't accept emulated or modified phones. Use a regular device.",
 }
 

@@ -108,6 +108,21 @@ class Startup(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(aiohttp.ClientError):
                 await session.get(f"http://127.0.0.1:{PORT}/healthz")
 
+    async def test_a_failed_login_still_closes_the_database(self):
+        # aiosqlite's worker thread isn't a daemon, so an open database would keep the process alive forever.
+        async def refused(bot, token):
+            raise RuntimeError("wrong token")
+        closed = []
+        original = entry.Database.close
+
+        async def spying_close(database):
+            closed.append(True)
+            await original(database)
+        with patch.object(StubBot, "login", refused), patch.object(entry.Database, "close", spying_close):
+            with self.assertRaisesRegex(RuntimeError, "wrong token"):
+                await asyncio.wait_for(entry.run(self.args), 10)
+        self.assertEqual(closed, [True])
+
     async def test_stale_lists_refresh_without_holding_up_startup(self):
         task = asyncio.ensure_future(entry.run(self.args))
         await self.wait_until_serving()

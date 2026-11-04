@@ -5,8 +5,8 @@ export function render(view, done) {
   const choice = { verified_role: null, channel: null };
   const start = h("button", { class: "button primary", text: "Finish setup", onclick: async () => {
     try {
-      await api(`/api/guilds/${state.guild.id}/setup`, { method: "POST", body: choice });
-      toast("Verification is on.");
+      const result = await api(`/api/guilds/${state.guild.id}/setup`, { method: "POST", body: choice });
+      toast(result.problem ?? "Verification is on.", Boolean(result.problem));
       done();
     } catch (error) {
       toast(error.message, true);

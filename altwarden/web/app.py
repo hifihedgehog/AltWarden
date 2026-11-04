@@ -6,6 +6,7 @@ nowhere else, and the Content Security Policy enforces that.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -13,7 +14,6 @@ import logging
 import re
 import secrets
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import aiohttp
@@ -21,7 +21,8 @@ from aiohttp import web
 
 from .. import __version__
 from ..catalog import CHECK_IDS, WEB
-from ..crypto import Keyring, new_token, pow_solved, token_hash
+from ..crypto import Keyring, network_of, new_token, pow_solved, token_hash
+from ..ports import DiscordUnavailable
 from ..service import Service
 from ..signals import MAX_REPORT_BYTES
 from .oauth import DiscordOAuth, OAuthError, account_from
@@ -32,10 +33,15 @@ STATIC = Path(__file__).parent / "static"
 DEVICE_COOKIE = "__Host-aw_device"
 FLOW_COOKIE = "__Host-aw_flow"
 SESSION_COOKIE = "__Host-aw_session"
+BROWSER_COOKIE = "__Host-aw_browser"
 FLOW_SECONDS = 900
 DASHBOARD_SECONDS = 12 * 3600
 MEMBER_SECONDS = 1800
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{20,64}")
+# A Discord ID as a route. int() reads "0123" as 123, so a padded ID would reach the server but miss its settings.
+SNOWFLAKE = "[1-9][0-9]{14,20}"
+ADMINISTRATOR = 1 << 3
+MANAGE_GUILD = 1 << 5
 # A path on this site. Browsers read a backslash as a slash, so "/\evil.example" would leave the site.
 LOCAL_PATH = re.compile(r"/(?![/\\])[A-Za-z0-9/_.?=&%-]*")
 
@@ -61,33 +67,42 @@ PAGES = {"/": "index.html", "/privacy": "privacy.html", "/terms": "terms.html", 
 
 
 class RateLimiter:
-    """A small token bucket per key. Keys live in memory only and clear themselves."""
+    """A small token bucket per key. Keys are hashed with a key that dies with the process, and live in memory only."""
+
+    MAX_KEYS = 100_000
 
     def __init__(self) -> None:
-        self.buckets: dict[str, tuple[float, float]] = {}
+        self.buckets: dict[bytes, tuple[float, float]] = {}
+        self.salt = secrets.token_bytes(16)
 
     def allow(self, key: str, *, per_minute: int, burst: int) -> bool:
+        name = hashlib.blake2b(key.encode(), key=self.salt, digest_size=16).digest()
         now = time.monotonic()
-        tokens, last = self.buckets.get(key, (float(burst), now))
+        tokens, last = self.buckets.pop(name, (float(burst), now))
         tokens = min(float(burst), tokens + (now - last) * per_minute / 60)
-        if tokens < 1:
-            self.buckets[key] = (tokens, now)
-            return False
-        self.buckets[key] = (tokens - 1, now)
-        if len(self.buckets) > 100_000:
-            self.buckets.clear()
-        return True
+        permitted = tokens >= 1
+        self.buckets[name] = (tokens - 1 if permitted else tokens, now)
+        if len(self.buckets) > self.MAX_KEYS:
+            # Every use moves a key to the end, so the first is the one unused for longest. Flooding
+            # the table can't free a key that is still being refused.
+            del self.buckets[next(iter(self.buckets))]
+        return permitted
 
 
 def client_ip(request: web.Request) -> str:
-    """The member's address. X-Forwarded-For counts only when the local proxy sent it."""
+    """The member's address, which only the local proxy can vouch for.
+
+    The proxy adds its own line after anything the client sent, and the real address is the last
+    value on that line. A forged header followed by any other header arrives as an earlier line,
+    so the first line can't be trusted.
+    """
     peer = request.remote or ""
     if request.app["trust_proxy"]:
         try:
             if ipaddress.ip_address(peer).is_loopback:
-                forwarded = request.headers.get("X-Forwarded-For", "")
-                if forwarded:
-                    candidate = forwarded.split(",")[-1].strip()
+                lines = request.headers.getall("X-Forwarded-For", [])
+                if lines:
+                    candidate = lines[-1].split(",")[-1].strip()
                     ipaddress.ip_address(candidate)
                     return candidate
         except ValueError:
@@ -103,6 +118,25 @@ def json_error(status: int, message: str, **extra) -> web.Response:
     return web.json_response({"error": message, **extra}, status=status)
 
 
+def parse_json(raw: bytes):
+    """Parse a request body. Python's parser lets through a lone surrogate, which the database can't store, so that goes too."""
+    value = json.loads(raw)
+    json.dumps(value, ensure_ascii=False).encode()
+    return value
+
+
+async def read_json(request: web.Request):
+    try:
+        return parse_json(await request.read())
+    except (ValueError, RecursionError):  # ValueError covers bad JSON, bad text, and numbers too long to convert
+        raise web.HTTPBadRequest(text="That request wasn't valid.")
+
+
+def same_text(first: str, second: str) -> bool:
+    """A constant-time compare. compare_digest refuses non-ASCII text, and a header or cookie can hold any bytes."""
+    return hmac.compare_digest(first.encode("utf-8", "surrogatepass"), second.encode("utf-8", "surrogatepass"))
+
+
 @web.middleware
 async def errors(request: web.Request, handler):
     try:
@@ -110,7 +144,9 @@ async def errors(request: web.Request, handler):
     except web.HTTPException:
         raise
     except Exception:
-        log.exception("Unhandled error on %s %s", request.method, request.path)
+        # The route's pattern, because the path itself can hold someone's verification link.
+        resource = request.match_info.route.resource
+        log.exception("Unhandled error on %s %s", request.method, resource.canonical if resource else "an unknown path")
         if request.path.startswith("/api/"):
             return json_error(500, "Something went wrong on our side.")
         return web.Response(status=500, text="Something went wrong on our side.")
@@ -137,7 +173,12 @@ def page(name: str, csp: str | None = None):
 
 
 def limited(request: web.Request, bucket: str, *, per_minute: int, burst: int) -> bool:
-    return not request.app["limits"].allow(f"{bucket}:{client_ip(request)}", per_minute=per_minute, burst=burst)
+    address = client_ip(request)
+    try:
+        address = network_of(address)  # one IPv6 connection holds a whole /64, so it counts as one address
+    except ValueError:
+        pass
+    return not request.app["limits"].allow(f"{bucket}:{address}", per_minute=per_minute, burst=burst)
 
 
 # --- verification flow -------------------------------------------------------------------------
@@ -147,6 +188,19 @@ def _token(request: web.Request) -> str:
     if not TOKEN_PATTERN.fullmatch(token):
         raise web.HTTPNotFound()
     return token
+
+
+def _browser_hash(token: str, browser: str) -> str:
+    """Hashed with the link, so one browser leaves unrelated values on links for two servers."""
+    return token_hash(f"{token}.{browser}")
+
+
+def _same_browser(request: web.Request, token: str, row: dict) -> bool:
+    """A link only runs in the browser that signed in. Otherwise someone could sign in, send the link
+    to another person, and pass on that person's browser and connection, and leave that person's
+    cookie on their own record."""
+    wanted = row["browser_hash"]
+    return wanted is None or same_text(_browser_hash(token, request.cookies.get(BROWSER_COOKIE, "")), wanted)
 
 
 async def verify_state(request: web.Request) -> web.Response:
@@ -159,11 +213,18 @@ async def verify_state(request: web.Request) -> web.Response:
     if row is None or row["expires_at"] <= time.time() or row["state"] == "closed":
         return web.json_response({"step": "expired"})
     guild = await service.port.guild(row["guild_id"])
-    member = await service.port.member(row["guild_id"], row["user_id"])
+    try:
+        member = await service.port.member(row["guild_id"], row["user_id"])
+    except DiscordUnavailable:
+        member = None  # only the name on the page goes missing, and the check itself finds out properly
     settings = await service.get_settings(row["guild_id"])
     step = {"open": "signin", "signed_in": "check", "checking": "check", "done": "done"}[row["state"]]
+    if step == "check" and not _same_browser(request, token, row):
+        step = "signin"
     return web.json_response({
         "step": step,
+        "tried": row["finished_at"] is not None,
+        "appeal": bool(settings and settings["appeals"]["enabled"]),
         "direct": bool(settings and settings["core"]["direct_signin"]),
         "guild": {"id": row["guild_id"], "name": guild.name if guild else "this server", "icon": guild.icon if guild else None},
         "member": {"id": row["user_id"], "name": member.username if member else "", "avatar": member.avatar if member else None},
@@ -197,7 +258,7 @@ async def verify_callback(request: web.Request) -> web.Response:
     flow = request.cookies.get(FLOW_COOKIE, "")
     state, _, token = flow.partition(".")
     given = request.query.get("state", "")
-    if not state or not token or not hmac.compare_digest(state, given):
+    if not state or not token or not same_text(state, given):
         raise web.HTTPFound("/help/link-expired")
     row = await service.session(token)
     if row is None or row["auth_state_hash"] != token_hash(state):
@@ -216,8 +277,13 @@ async def verify_callback(request: web.Request) -> web.Response:
             response = web.HTTPFound(f"{target}?signin=failed")
         else:
             account = account_from(me, service.net.is_disposable, wants_email=wants_email)
-            problem = await service.attach_account(token, account)
+            browser = request.cookies.get(BROWSER_COOKIE, "")
+            if not TOKEN_PATTERN.fullmatch(browser):
+                browser = new_token(24)
+            problem = await service.attach_account(token, account, browser=_browser_hash(token, browser))
             response = web.HTTPFound(f"{target}?signin=wrong" if problem == "wrong_account" else target)
+            if problem is None:
+                response.set_cookie(BROWSER_COOKIE, browser, path="/", secure=True, httponly=True, samesite="Lax")  # gone when the browser closes
     response.del_cookie(FLOW_COOKIE, path="/", secure=True, httponly=True, samesite="Lax")
     raise response
 
@@ -226,16 +292,17 @@ async def verify_challenge(request: web.Request) -> web.Response:
     if limited(request, "challenge", per_minute=30, burst=10):
         return json_error(429, "Too many requests.")
     service: Service = request.app["service"]
-    challenge = await service.issue_challenge(_token(request))
+    token = _token(request)
+    row = await service.session(token)
+    if row is None or not _same_browser(request, token, row):
+        return json_error(409, "This link can't be used right now.")
+    challenge = await service.issue_challenge(token)
     if challenge is None:
         return json_error(409, "This link can't be used right now.")
     response = web.json_response(challenge)
     keys: Keyring = request.app["keys"]
     if keys.read_device_cookie(request.cookies.get(DEVICE_COOKIE)) is None:
-        settings = None
-        row = await service.session(_token(request))
-        if row:
-            settings = await service.get_settings(row["guild_id"])
+        settings = await service.get_settings(row["guild_id"])
         days = settings["privacy"]["identifier_days"] if settings else 365
         set_cookie(response, DEVICE_COOKIE, keys.new_device_cookie(), min(days, 400) * 86400, request)
     return response
@@ -244,18 +311,19 @@ async def verify_challenge(request: web.Request) -> web.Response:
 async def verify_submit(request: web.Request) -> web.Response:
     if limited(request, "submit", per_minute=20, burst=6):
         return json_error(429, "Too many requests.")
-    if (request.content_length or 0) > MAX_REPORT_BYTES:
+    raw = await request.read()  # a chunked request announces no length, so the size is checked on what arrived
+    if len(raw) > MAX_REPORT_BYTES:
         return json_error(413, "That report is too large.")
     token = _token(request)
     service: Service = request.app["service"]
     try:
-        body = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        body = parse_json(raw)
+    except (ValueError, RecursionError):
         return json_error(400, "That request wasn't valid.")
     if not isinstance(body, dict) or not isinstance(body.get("nonce"), str) or not isinstance(body.get("report"), dict):
         return json_error(400, "That request wasn't valid.")
     salt_row = await service.session(token)
-    if salt_row is None or not salt_row["pow_salt"]:
+    if salt_row is None or not salt_row["pow_salt"] or not _same_browser(request, token, salt_row):
         return json_error(409, "This link can't be used right now.")
     counter = body.get("counter")
     if not isinstance(counter, int) or not pow_solved(salt_row["pow_salt"], counter, salt_row["pow_bits"]):
@@ -278,8 +346,10 @@ async def verify_help(request: web.Request) -> web.Response:
     if limited(request, "help", per_minute=6, burst=3):
         return json_error(429, "Too many requests.")
     service: Service = request.app["service"]
-    row = await service.session(_token(request))
-    if row is None or row["account"] is None:
+    token = _token(request)
+    row = await service.session(token)
+    # "opened_at" means they signed in. What the sign-in read may be gone by now, and they can still need help.
+    if row is None or row["opened_at"] is None or row["expires_at"] <= time.time() or not _same_browser(request, token, row):
         return json_error(409, "This link can't be used right now.")
     member = await service.port.member(row["guild_id"], row["user_id"])
     if member is None:
@@ -299,6 +369,9 @@ async def login(request: web.Request) -> web.Response:
     purpose = request.query.get("for", "dashboard")
     if purpose not in ("dashboard", "member"):
         raise web.HTTPBadRequest()
+    # Until Discord hands the servers over, there's no telling which of a person's servers the dashboard can show.
+    if purpose == "dashboard" and await service.port.guild_loading("0"):
+        return web.Response(status=503, text="AltWarden is starting up. Try again in a minute.")
     next_path = request.query.get("next", "/dashboard")
     if not LOCAL_PATH.fullmatch(next_path):
         next_path = "/dashboard"
@@ -314,7 +387,7 @@ async def login(request: web.Request) -> web.Response:
 async def login_callback(request: web.Request) -> web.Response:
     service: Service = request.app["service"]
     state = request.cookies.get(FLOW_COOKIE, "")
-    if not state or not hmac.compare_digest(state, request.query.get("state", "")):
+    if not state or not same_text(state, request.query.get("state", "")):
         raise web.HTTPFound("/")
     row = await service.db.one("SELECT * FROM login_states WHERE state_hash = ?", (token_hash(state),))
     await service.db.run("DELETE FROM login_states WHERE state_hash = ?", (token_hash(state),))
@@ -334,8 +407,11 @@ async def login_callback(request: web.Request) -> web.Response:
     token = new_token()
     now = time.time()
     lifetime = DASHBOARD_SECONDS if dashboard else MEMBER_SECONDS
+    # Only servers the dashboard can show. The rest of a person's server list is none of AltWarden's business.
     kept = [{"id": str(g["id"]), "name": g.get("name", ""), "icon": g.get("icon"), "owner": bool(g.get("owner")),
-             "permissions": str(g.get("permissions", "0"))} for g in guilds]
+             "permissions": str(g.get("permissions", "0"))} for g in guilds
+            if g.get("owner") or int(g.get("permissions") or 0) & (ADMINISTRATOR | MANAGE_GUILD) or await service.port.guild(str(g["id"])) is not None
+            or await service.port.guild_loading(str(g["id"]))]
     await service.db.run(
         "INSERT INTO web_sessions (token_hash, user_id, username, avatar, guilds, csrf, scope, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (token_hash(token), str(me["id"]), str(me.get("global_name") or me.get("username", ""))[:40], me.get("avatar"), json.dumps(kept),
@@ -403,7 +479,7 @@ def csrf_ok(request: web.Request, session: dict) -> bool:
     public = request.app["service"].public_url
     if origin is not None and origin != public:
         return False
-    return hmac.compare_digest(request.headers.get("X-CSRF-Token", ""), session["csrf"])
+    return same_text(request.headers.get("X-CSRF-Token", ""), session["csrf"])
 
 
 async def logout(request: web.Request) -> web.Response:
@@ -422,6 +498,8 @@ async def me_data(request: web.Request) -> web.Response:
     session = await current_session(request)
     if session is None:
         return json_error(401, "Sign in first.", login=f"/login?for=member&next={request.query.get('next', '/my-data')}")
+    if limited(request, "my-data", per_minute=20, burst=10):
+        return json_error(429, "Too many requests.")
     service: Service = request.app["service"]
     return web.json_response({"user": {"id": session["user_id"], "name": session["username"], "avatar": session["avatar"]},
                               "csrf": session["csrf"], "records": await service.my_data(session["user_id"])})
@@ -431,7 +509,9 @@ async def me_delete(request: web.Request) -> web.Response:
     session = await current_session(request)
     if session is None or not csrf_ok(request, session):
         return json_error(403, "Sign in first.")
-    body = await request.json()
+    if limited(request, "my-data-delete", per_minute=6, burst=3):
+        return json_error(429, "Too many requests.")
+    body = await read_json(request)
     guild_id = body.get("guild_id") if isinstance(body, dict) else None
     if guild_id is not None and not re.fullmatch(r"\d{15,21}", str(guild_id)):
         return json_error(400, "That request wasn't valid.")
@@ -444,11 +524,15 @@ async def me_appeal_state(request: web.Request) -> web.Response:
     guild_id = request.match_info["guild_id"]
     if session is None:
         return json_error(401, "Sign in first.", login=f"/login?for=member&next=/appeal/{guild_id}")
+    if limited(request, "appeal-state", per_minute=30, burst=10):
+        return json_error(429, "Too many requests.")
     service: Service = request.app["service"]
-    guild = await service.port.guild(guild_id)
     last = await service.db.one("SELECT check_id, at FROM attempts WHERE guild_id = ? AND user_id = ? AND outcome = 'failed' ORDER BY at DESC LIMIT 1",
                                 (guild_id, session["user_id"]))
-    open_appeal = await service.db.scalar("SELECT 1 FROM appeals WHERE guild_id = ? AND user_id = ? AND status = 'open'", (guild_id, session["user_id"]))
+    # A server's name and icon go only to someone with a reason to see them, not to anyone who guesses its ID.
+    known = last is not None or await service.port.member(guild_id, session["user_id"]) is not None
+    guild = await service.port.guild(guild_id) if known else None
+    open_appeal = await service.db.scalar("SELECT 1 FROM appeals WHERE guild_id = ? AND user_id = ? AND status IN ('open', 'deciding')", (guild_id, session["user_id"]))
     return web.json_response({"user": {"id": session["user_id"], "name": session["username"], "avatar": session["avatar"]}, "csrf": session["csrf"],
                               "guild": {"id": guild_id, "name": guild.name if guild else "this server", "icon": guild.icon if guild else None},
                               "check": last["check_id"] if last else None, "open": bool(open_appeal)})
@@ -460,7 +544,7 @@ async def me_appeal(request: web.Request) -> web.Response:
         return json_error(403, "Sign in first.")
     if limited(request, "appeal", per_minute=6, burst=3):
         return json_error(429, "Too many requests.")
-    body = await request.json()
+    body = await read_json(request)
     text = body.get("text") if isinstance(body, dict) else None
     if not isinstance(text, str):
         return json_error(400, "That request wasn't valid.")
@@ -506,7 +590,7 @@ def build_app(service: Service, keys: Keyring, oauth: DiscordOAuth, *, trust_pro
     add("/help", page("help.html"))
     add("/help/{slug}", page("help.html"))
     add("/my-data", page("mydata.html"))
-    add("/appeal/{guild_id:\\d+}", page("appeal.html"))
+    add(f"/appeal/{{guild_id:{SNOWFLAKE}}}", page("appeal.html"))
     add("/dashboard", page("dashboard.html", DASHBOARD_CSP))
     add("/dashboard/callback", login_callback)
     add("/dashboard/{tail:.*}", page("dashboard.html", DASHBOARD_CSP))
@@ -521,8 +605,8 @@ def build_app(service: Service, keys: Keyring, oauth: DiscordOAuth, *, trust_pro
     app.router.add_post("/api/logout", logout)
     add("/api/me/data", me_data)
     app.router.add_post("/api/me/delete", me_delete)
-    add("/api/me/appeal/{guild_id:\\d+}", me_appeal_state)
-    app.router.add_post("/api/me/appeal/{guild_id:\\d+}", me_appeal)
+    add(f"/api/me/appeal/{{guild_id:{SNOWFLAKE}}}", me_appeal_state)
+    app.router.add_post(f"/api/me/appeal/{{guild_id:{SNOWFLAKE}}}", me_appeal)
     api_routes(app)
     app.router.add_static("/static", STATIC, show_index=False, follow_symlinks=False)
     return app

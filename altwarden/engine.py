@@ -119,17 +119,21 @@ def effective_settings(settings: dict, raid_active: bool) -> dict:
     age = tightened["checks"]["account_age"]
     age["enabled"] = True
     age["days"] = max(age["days"], raid["min_account_days"])
-    age["action"] = KICK
+    age["action"] = _at_least(age["action"], KICK)
     for check_id in ("vpn", "automation", "antidetect"):
         check = tightened["checks"][check_id]
         check["enabled"] = True
-        if SEVERITY[check["action"]] < SEVERITY[DENY]:
-            check["action"] = DENY
+        check["action"] = _at_least(check["action"], DENY)
     alt = tightened["checks"]["alt_account"]
     alt["enabled"] = True
-    if SEVERITY[alt["alt_action"]] < SEVERITY[KICK]:
-        alt["alt_action"] = KICK
+    alt["alt_action"] = _at_least(alt["alt_action"], KICK)
+    alt["banned_alt_action"] = _at_least(alt["banned_alt_action"], KICK)
     return tightened
+
+
+def _at_least(action: str, floor: str) -> str:
+    """A raid only ever tightens a rule, so a server's Ban stays a Ban."""
+    return action if SEVERITY[action] >= SEVERITY[floor] else floor
 
 
 def _active(attempt: Attempt, check_id: str) -> dict | None:
@@ -230,8 +234,14 @@ def _check_alt(attempt: Attempt, decision: Decision) -> None:
     if link is None:
         return
     decision.alt_link = link
-    action = check["banned_alt_action"] if link.banned else check["alt_action"]
-    decision.main_action = WATCH if link.banned else check["main_action"]
+    if link.banned:
+        action, other = check["banned_alt_action"], WATCH
+    elif link.other_is_main:
+        action, other = check["alt_action"], check["main_action"]
+    else:
+        # This account verified first, so it's the main one and the other is the alt.
+        action, other = check["main_action"], WATCH
+    decision.main_action = other
     decision.findings.append(Finding("alt_account", action, "alt_account", link.as_dict()))
 
 

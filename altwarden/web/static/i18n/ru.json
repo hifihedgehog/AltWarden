@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "Открой ссылку в обычном окне, а не в приватном.",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "Браузер блокирует данные, нужные этому серверу. Используй браузер с настройками по умолчанию.",
   "This attempt scored too high on risk. Try another browser or connection.": "У этой попытки слишком высокий показатель риска. Попробуй другой браузер или подключение.",
-  "Open the link on your own device, not inside a virtual machine.": "Открой ссылку на своём устройстве, а не в виртуальной машине.",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "Этот сервер не принимает эмуляторы и изменённые телефоны. Используй обычное устройство."
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "Открой ссылку на своём устройстве, а не в виртуальной машине. Если это ваш компьютер, включите аппаратное ускорение в настройках браузера.",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "Этот сервер не принимает эмуляторы и изменённые телефоны. Используй обычное устройство.",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "Последняя попытка не прошла. Нажмите «Попробовать снова», когда будете готовы.",
+  "Please sign in again": "Войдите ещё раз",
+  "This server's rules changed, so Discord needs to confirm your account again.": "Правила этого сервера изменились, поэтому Discord должен снова подтвердить вашу учётную запись.",
+  "Actions you took as staff": "Ваши действия в роли персонала",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "Ничего не удалено. Возможно, ваш вход истёк: войдите снова и повторите попытку."
 }

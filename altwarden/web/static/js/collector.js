@@ -23,8 +23,9 @@ function isNativeSource(source, name) {
 }
 
 // A native function looks native in every way, not only in its printed source. These are the tests
-// CreepJS runs: printed source, own properties, and the errors a real native function throws.
-function functionLies(fn, name, cleanToString) {
+// CreepJS runs: printed source, own properties, and the errors a real native function throws. Only the
+// tests the language and WebIDL specs guarantee are here, so a browser update can't turn them on real members.
+function functionLies(fn, name, cleanToString, proto) {
   const lies = [];
   try {
     if (!isNativeSource(cleanToString.call(fn), name)) lies.push("source");
@@ -38,6 +39,19 @@ function functionLies(fn, name, cleanToString) {
     threw = false;
     try { new fn(); } catch (error) { threw = error instanceof TypeError; }
     if (!threw) lies.push("constructor");
+    // WebIDL: reading an attribute on the prototype itself throws. A stand-in getter usually just answers.
+    if (Object.getOwnPropertyDescriptor(proto, name)?.get) {
+      threw = false;
+      try { proto[name]; } catch (error) { threw = error instanceof TypeError; }
+      if (!threw) lies.push("illegal");
+    }
+    // A cycle in a prototype chain throws a TypeError. The search for one stops at a Proxy
+    // (ECMA-262, OrdinarySetPrototypeOf), so a wrapped function lets the cycle in.
+    const parent = Object.getPrototypeOf(fn);
+    threw = false;
+    try { Object.setPrototypeOf(fn, Object.create(fn)); } catch (error) { threw = error instanceof TypeError; }
+    Object.setPrototypeOf(fn, parent);
+    if (!threw) lies.push("proxy chain");
   } catch {
     lies.push("inspection failed");
   }
@@ -70,11 +84,14 @@ function detectLies() {
       for (const name of names) {
         const descriptor = Object.getOwnPropertyDescriptor(proto, name);
         const fn = descriptor?.get ?? descriptor?.value;
-        if (typeof fn !== "function") continue;
-        const lies = functionLies(fn, name, cleanToString);
+        const lies = typeof fn === "function" ? functionLies(fn, name, cleanToString, proto) : [];
+        // These live on the prototype in every browser, so one set on the object itself was put there.
+        const instance = { Navigator: navigator, Screen: screen }[label];
+        if (instance && Object.prototype.hasOwnProperty.call(instance, name)) lies.push("own property");
         if (lies.length) {
           report.total++;
           report.apis.push(`${label}.${name}`);
+          // A Proxy alone doesn't count here. Privacy extensions use them, and a server's Watch on those has to hold.
           if (lies.includes("constructor") && !lies.includes("source")) report.proxy = true;
         }
       }
@@ -175,14 +192,11 @@ async function privacyState(gpu) {
   return state;
 }
 
-// devtools-detect's window gap test, then devtools-detector's console timing test: printing a large
-// table is far slower than logging it only while the console panel is open. That project keeps a
-// running maximum across many checks over time. This page checks once, so it takes three rounds, and
-// all three must agree, because one slow moment on a busy machine looks the same.
+// devtools-detector's console timing test: printing a large table is far slower than logging it only
+// while the console panel is open, or a script is driving the browser. That project keeps a running
+// maximum across many checks over time. This page checks once, so it takes three rounds, and all three
+// must agree, because one slow moment on a busy machine looks the same.
 export function developerTools() {
-  const gapWide = outerWidth - innerWidth > 170;
-  const gapTall = outerHeight - innerHeight > 170;
-  const size = gapWide !== gapTall;
   const row = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [i, String(i)]));
   const rows = Array(50).fill(row);
   const time = (print) => { const begin = performance.now(); print(); return performance.now() - begin; };
@@ -194,7 +208,7 @@ export function developerTools() {
     if (slowestLog > 0 && tableTime > slowestLog * 10) agreed++;
   }
   console.clear();
-  return { size, timing: agreed === 3 };
+  return { timing: agreed === 3 };
 }
 
 async function userAgentData() {
@@ -223,7 +237,11 @@ function timeZone() {
 
 export async function collect() {
   const gpu = graphics();
-  const botd = within(import("/static/vendor/botd-2.0.0.esm.js").then((module) => module.load()).then((detector) => detector.detect()), 2500);
+  // Which detectors fired goes along too, because one of them alone is ordinary on a real browser.
+  const botd = within(import("/static/vendor/botd-2.0.0.esm.js").then((module) => module.load()).then((detector) => {
+    const verdict = detector.detect();
+    return { ...verdict, fired: Object.entries(detector.getDetections() ?? {}).filter(([, found]) => found.bot).map(([name]) => name) };
+  }), 2500);
   const fingerprint = within(window.FingerprintJS?.load({ monitoring: false }).then((agent) => agent.get()), 4000);
   const privateWindow = within(window.detectIncognito?.detectIncognito?.() ?? window.detectIncognito?.(), 2000);
   const [uad, worker, privacy, fp, bot, incognito] = await Promise.all([
@@ -238,7 +256,7 @@ export async function collect() {
     nav: {
       ua: navigator.userAgent, platform: navigator.platform, vendor: navigator.vendor, webdriver: navigator.webdriver,
       cores: navigator.hardwareConcurrency, memory: navigator.deviceMemory, languages: navigator.languages,
-      touch: navigator.maxTouchPoints,
+      touch: navigator.maxTouchPoints, pdf: navigator.pdfViewerEnabled, modern: CSS.supports("border-end-end-radius: initial"),
     },
     uad,
     scr: { w: screen.width, h: screen.height, iw: innerWidth, ih: innerHeight, ow: outerWidth, oh: outerHeight, dpr: devicePixelRatio },

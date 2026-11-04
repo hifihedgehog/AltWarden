@@ -33,7 +33,7 @@ def clean_report(**changes):
         "lies": {"total": 0, "apis": []},
         "canvas": {"noisy": False, "blocked": False},
         "privacy": {},
-        "devtools": {"size": False, "timing": False},
+        "devtools": {"timing": False},
         "act": {"pointer": 12, "ms": 2500, "visible": True},
     }
     report.update(changes)
@@ -57,7 +57,7 @@ class CleanBrowsers(unittest.TestCase):
         self.assert_clean(judge())
 
     def test_mac_firefox(self):
-        report = clean_report(nav={"ua": FIREFOX_MAC, "platform": "MacIntel", "vendor": "", "cores": 8},
+        report = clean_report(nav={"ua": FIREFOX_MAC, "platform": "MacIntel", "vendor": "", "webdriver": False, "cores": 8},
                               uad={}, gpu={"renderer": "Apple M1, or similar"}, eng={"evalLen": 37},
                               worker={"ua": FIREFOX_MAC, "platform": "MacIntel", "cores": 8, "tz": "America/Chicago"})
         self.assert_clean(judge(report, FIREFOX_MAC))
@@ -160,17 +160,10 @@ class Hostile(unittest.TestCase):
     def test_developer_tools(self):
         self.assertTrue(judge(clean_report(devtools={"timing": True})).devtools)
 
-    def test_a_side_panel_on_chromium_is_not_devtools(self):
-        self.assertFalse(judge(clean_report(devtools={"size": True})).devtools)
 
     def other_engine(self, agent, platform, vendor, tools):
-        return judge(clean_report(nav={"ua": agent, "platform": platform, "vendor": vendor, "cores": 8}, uad={}, gpu={"renderer": ""},
+        return judge(clean_report(nav={"ua": agent, "platform": platform, "vendor": vendor, "webdriver": False, "cores": 8}, uad={}, gpu={"renderer": ""},
                                   eng={"evalLen": 37}, worker={}, devtools=tools), agent)
-
-    def test_window_gap_still_counts_off_chromium(self):
-        self.assertTrue(self.other_engine(FIREFOX_MAC, "MacIntel", "", {"size": True}).devtools)
-        safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
-        self.assertTrue(self.other_engine(safari, "MacIntel", "Apple Computer, Inc.", {"size": True}).devtools)
 
     def test_console_timing_is_not_trusted_on_safari(self):
         safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
@@ -321,6 +314,8 @@ class AltMatching(unittest.IsolatedAsyncioTestCase):
         self.dir.cleanup()
 
     async def seed(self, user, **digests):
+        await self.db.touch_member("1", user)
+        await self.db.mark_verified("1", user, "web")
         for kind, digest in digests.items():
             await self.db.store_identifier("1", user, kind, digest, self.future)
 
@@ -338,15 +333,13 @@ class AltMatching(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(links[0].confidence, "possible")
         self.assertIsNone(altmatch.strongest(links, "likely"))
 
-    async def test_fingerprint_plus_connection_is_confirmed(self):
+    async def test_fingerprint_plus_connection_is_likely(self):
         await self.seed("10", fingerprint="f1", ip="i1")
-        self.assertEqual((await self.links({"fingerprint": "f1", "ip": "i1"}))[0].confidence, "confirmed")
+        self.assertEqual((await self.links({"fingerprint": "f1", "ip": "i1"}))[0].confidence, "likely")
 
     async def test_two_iphones_on_mobile_data_prove_nothing(self):
         await self.seed("10", fingerprint="f1", ip="i1")
-        links = await self.links({"fingerprint": "f1", "ip": "i1"}, weak_fingerprint=True, weak_ip=True)
-        self.assertEqual(links[0].score, 45)
-        self.assertIsNone(altmatch.strongest(links, "likely"))
+        self.assertEqual(await self.links({"fingerprint": "f1", "ip": "i1"}, weak_fingerprint=True, weak_ip=True), [])
 
     async def test_switched_off_methods_are_ignored(self):
         await self.seed("10", cookie="c1")
@@ -376,12 +369,12 @@ class AltMatching(unittest.IsolatedAsyncioTestCase):
 
     async def test_main_is_whoever_verified_first(self):
         await self.db.touch_member("1", "10")
-        await self.db.update_member("1", "10", verified_at=100.0)
+        await self.db.update_member("1", "10", first_verified_at=100.0)
         await self.db.touch_member("1", "99")
         link = altmatch.Link("10", 100, "confirmed")
         await altmatch.assign_roles(self.db, "1", "99", link)
         self.assertTrue(link.other_is_main)
-        await self.db.update_member("1", "99", verified_at=50.0)
+        await self.db.update_member("1", "99", first_verified_at=50.0)
         await altmatch.assign_roles(self.db, "1", "99", link)
         self.assertFalse(link.other_is_main)
 
@@ -491,7 +484,7 @@ class Engine(unittest.TestCase):
     def test_alt_of_a_good_member_gets_the_softer_action(self):
         doc = settings.defaults()
         doc["checks"]["alt_account"].update(enabled=True, alt_action="deny", banned_alt_action="ban", main_action="watch")
-        link = altmatch.Link("10", 100, "confirmed", ["cookie"])
+        link = altmatch.Link("10", 100, "confirmed", ["cookie"], verified=True)
         self.assertEqual(engine.run_checks(self.attempt(doc, links=[link])).action, "deny")
 
     def test_possible_alt_is_ignored_at_default_confidence(self):

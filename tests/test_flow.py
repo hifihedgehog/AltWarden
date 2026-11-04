@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from altwarden import crypto, db, notices, settings
 from altwarden.netintel import NetIntel, load_lists
 from altwarden.service import Service
-from altwarden.web.app import DEVICE_COOKIE, FLOW_COOKIE, SESSION_COOKIE, build_app
+from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, SESSION_COOKIE, build_app
 from altwarden.web.oauth import DiscordOAuth
 from fakes import (CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE, FakeDiscordApi,
                    FakePort)
@@ -107,18 +107,20 @@ class Base(unittest.IsolatedAsyncioTestCase):
         self.jar[FLOW_COOKIE] = response.cookies[FLOW_COOKIE].value
         self.discord.user["id"] = user
         response = await self.client.get("/verify/callback", params={"code": "abc", "state": state}, allow_redirects=False,
-                                         headers=self.cookie_header(FLOW_COOKIE))
+                                         headers=self.cookie_header(FLOW_COOKIE, BROWSER_COOKIE))
+        if BROWSER_COOKIE in response.cookies:
+            self.jar[BROWSER_COOKIE] = response.cookies[BROWSER_COOKIE].value
         return response
 
     async def attempt(self, token, report=None, ip="203.0.113.9", ua=None):
         headers = {"X-Forwarded-For": ip, "User-Agent": ua or clean_report()["nav"]["ua"]}
-        headers.update(self.cookie_header(DEVICE_COOKIE))
+        headers.update(self.cookie_header(DEVICE_COOKIE, BROWSER_COOKIE))
         response = await self.client.post(f"/api/verify/{token}/challenge", headers=headers)
         self.assertEqual(response.status, 200, await response.text())
         challenge = await response.json()
         if DEVICE_COOKIE in response.cookies:
             self.jar[DEVICE_COOKIE] = response.cookies[DEVICE_COOKIE].value
-            headers.update(self.cookie_header(DEVICE_COOKIE))
+            headers.update(self.cookie_header(DEVICE_COOKIE, BROWSER_COOKIE))
         body = {"nonce": challenge["nonce"], "counter": solve(challenge["salt"], challenge["bits"]), "report": report or clean_report()}
         return await self.client.post(f"/api/verify/{token}/submit", json=body, headers=headers)
 
@@ -258,19 +260,21 @@ class SubmissionGuards(Base):
 
     async def test_nonce_cannot_be_replayed(self):
         token = await self.signed_in()
-        response = await self.client.post(f"/api/verify/{token}/challenge")
+        cookies = self.cookie_header(BROWSER_COOKIE)
+        response = await self.client.post(f"/api/verify/{token}/challenge", headers=cookies)
         challenge = await response.json()
         body = {"nonce": challenge["nonce"], "counter": solve(challenge["salt"], challenge["bits"]), "report": clean_report()}
-        first = await self.client.post(f"/api/verify/{token}/submit", json=body)
+        first = await self.client.post(f"/api/verify/{token}/submit", json=body, headers=cookies)
         self.assertEqual(first.status, 200)
-        second = await self.client.post(f"/api/verify/{token}/submit", json=body)
+        second = await self.client.post(f"/api/verify/{token}/submit", json=body, headers=cookies)
         self.assertEqual(second.status, 409)
 
     async def test_unsolved_puzzle_is_refused(self):
         token = await self.signed_in()
-        challenge = await (await self.client.post(f"/api/verify/{token}/challenge")).json()
+        cookies = self.cookie_header(BROWSER_COOKIE)
+        challenge = await (await self.client.post(f"/api/verify/{token}/challenge", headers=cookies)).json()
         wrong = next(n for n in range(1 << 20) if not crypto.pow_solved(challenge["salt"], n, challenge["bits"]))
-        response = await self.client.post(f"/api/verify/{token}/submit", json={"nonce": challenge["nonce"], "counter": wrong, "report": {}})
+        response = await self.client.post(f"/api/verify/{token}/submit", json={"nonce": challenge["nonce"], "counter": wrong, "report": {}}, headers=cookies)
         self.assertEqual(response.status, 400)
 
     async def test_check_cannot_run_before_sign_in(self):
@@ -745,7 +749,7 @@ class Dashboard(Base):
     async def test_settings_save_cannot_change_permissions(self):
         await self.log_in()
         document = await (await self.client.get(f"/api/guilds/{GUILD}/settings", headers=self.session_cookie)).json()
-        document["settings"]["permissions"]["pages"] = {"settings": {"edit": {"required": []}}}
+        document["settings"]["permissions"] = {"pages": {"settings": {"edit": {"required": []}}}}
         await self.client.put(f"/api/guilds/{GUILD}/settings", json={"settings": document["settings"]}, headers=self.headers)
         self.assertEqual((await self.service.get_settings(GUILD))["permissions"]["pages"], {})
 

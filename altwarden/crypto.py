@@ -58,7 +58,7 @@ def new_token(nbytes: int = 32) -> str:
 
 def token_hash(token: str) -> str:
     """What the database keeps instead of a token, so a stolen copy can't be replayed."""
-    return hashlib.sha256(token.encode()).hexdigest()
+    return hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()  # a cookie can hold any bytes
 
 
 def network_of(ip: str) -> str:
@@ -91,11 +91,11 @@ class Keyring:
         return hmac.new(key, value.encode(), hashlib.sha256).digest()[:DIGEST_BYTES].hex()
 
     def sign(self, purpose: str, message: str) -> str:
-        mac = hmac.new(self.derive("sign", purpose), message.encode(), hashlib.sha256).digest()
+        mac = hmac.new(self.derive("sign", purpose), message.encode("utf-8", "surrogatepass"), hashlib.sha256).digest()
         return base64.urlsafe_b64encode(mac).rstrip(b"=").decode()
 
     def verify(self, purpose: str, message: str, signature: str) -> bool:
-        return hmac.compare_digest(self.sign(purpose, message), signature)
+        return hmac.compare_digest(self.sign(purpose, message).encode(), signature.encode("utf-8", "surrogatepass"))  # a cookie can hold any bytes, and compare_digest refuses non-ASCII text
 
     def new_device_cookie(self) -> str:
         """A random browser identifier, signed so a forged value is never treated as evidence."""

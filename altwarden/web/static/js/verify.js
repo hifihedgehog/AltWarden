@@ -2,6 +2,7 @@
 import { collect, solvePuzzle } from "/static/js/collector.js";
 import { loadLanguage, t } from "/static/js/i18n.js";
 
+window.pageStarted = true;  // tells loading-guard.js this script loaded, however long the server takes to answer
 const token = location.pathname.split("/")[2];
 const card = document.getElementById("card");
 const CHECK_TIMEOUT = 60000;
@@ -44,9 +45,10 @@ function showExpired() {
   );
 }
 
-function showSignIn(state) {
+function showSignIn(state, again) {
   const problem = new URLSearchParams(location.search).get("signin");
-  if (state.direct && !problem) {
+  // After a failed try the page waits to be asked, or each reload would sign in and spend another attempt.
+  if (state.direct && !problem && (!state.tried || again)) {
     location.replace(`/v/${token}/signin`);
     return;
   }
@@ -67,6 +69,23 @@ function showSignIn(state) {
       guides[problem] ? el("a", { class: "button", href: guides[problem], text: t("What to do") }) : null),
     privacyLine(),
   );
+}
+
+// A reload mustn't spend an attempt, so after a failure the page waits to be asked.
+function showTried(state) {
+  render(
+    header(state),
+    el("h1", { text: t("You weren't verified") }),
+    el("p", { text: t("Your last attempt didn't pass. Press Try again when you're ready.") }),
+    el("div", { class: "verify-actions" },
+      el("a", { class: "button primary", href: retryUrl(), text: t("Try again") }),
+      el("a", { class: "button", href: "/help/verification", text: t("What to do") }),
+      state.appeal ? el("a", { class: "button", href: `/appeal/${state.guild.id}`, text: t("Appeal to staff") }) : null),
+  );
+}
+
+function retryUrl() {
+  return `${location.pathname}?again=1`;
 }
 
 function stepRow(label) {
@@ -143,7 +162,7 @@ function showResult(state, result) {
     return;
   }
   const actions = el("div", { class: "verify-actions" });
-  if (result.retry) actions.append(el("a", { class: "button primary", href: location.pathname, text: t("Try again") }));
+  if (result.retry) actions.append(el("a", { class: "button primary", href: retryUrl(), text: t("Try again") }));
   if (result.help) actions.append(el("a", { class: "button", href: `/help/${result.help}`, text: t("What to do") }));
   if (result.staff_help) actions.append(talkToStaff());
   if (result.appeal) actions.append(el("a", { class: "button", href: `/appeal/${state.guild.id}`, text: t("Appeal to staff") }));
@@ -163,21 +182,27 @@ function talkToStaff() {
   const button = el("button", { class: "button", type: "button", text: t("Talk to staff") });
   button.addEventListener("click", async () => {
     button.disabled = true;
-    const response = await fetch(`/api/verify/${token}/help`, { method: "POST", credentials: "same-origin" });
-    const data = await response.json();
-    if (response.ok) {
-      location.href = data.url;
-      return;
+    let problem = null;
+    try {
+      const response = await fetch(`/api/verify/${token}/help`, { method: "POST", credentials: "same-origin" });
+      const data = await response.json();
+      if (response.ok) {
+        location.href = data.url;
+        return;
+      }
+      problem = data.error;
+    } catch {
+      problem = null;
     }
     button.disabled = false;
-    button.textContent = data.error || t("Something went wrong. Please try again.");
+    button.textContent = problem || t("Something went wrong. Please try again.");
   });
   return button;
 }
 
 function showCooldown(state, seconds) {
   const line = el("p");
-  const retry = el("a", { class: "button primary", href: location.pathname, text: t("Try again") });
+  const retry = el("a", { class: "button primary", href: retryUrl(), text: t("Try again") });
   retry.hidden = true;
   let left = Math.ceil(seconds);
   const tick = () => {
@@ -197,16 +222,26 @@ function showCooldown(state, seconds) {
 async function main() {
   await loadLanguage();
   document.title = t("Verify your account") + " | AltWarden";
+  const again = new URLSearchParams(location.search).has("again");
+  if (again) history.replaceState(null, "", location.pathname);
   const response = await fetch(`/api/verify/${token}`, { credentials: "same-origin" });
+  if (response.status >= 500 || response.status === 429) throw new Error("the server had a problem");
   if (!response.ok) {
     showExpired();
     return;
   }
   const state = await response.json();
   if (state.step === "expired") showExpired();
-  else if (state.step === "signin") showSignIn(state);
+  else if (state.step === "signin") showSignIn(state, again);
+  else if (state.step === "check" && state.tried && !again) showTried(state);
   else if (state.step === "check") runCheck(state);
   else showResult(state, { status: "verified" });
 }
 
-main();
+main().catch(() => {
+  render(
+    el("h1", { text: t("Please try again") }),
+    el("p", { text: t("Something went wrong. Please try again.") }),
+    el("div", { class: "verify-actions" }, el("a", { class: "button primary", href: location.pathname, text: t("Reload") })),
+  );
+});

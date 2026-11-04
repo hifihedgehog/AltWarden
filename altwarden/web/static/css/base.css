@@ -84,7 +84,9 @@ body {
   color: var(--text);
   font: 16px/1.55 var(--font);
   -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere; /* a long unbroken name or appeal can't widen the page */
 }
+table { overflow-wrap: break-word; } /* "anywhere" would squeeze columns until ordinary words split */
 h1, h2, h3, h4 { line-height: 1.25; margin: 0 0 .5em; letter-spacing: -.01em; }
 h1 { font-size: 2rem; }
 h2 { font-size: 1.45rem; }

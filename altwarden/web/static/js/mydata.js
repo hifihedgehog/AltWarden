@@ -1,6 +1,7 @@
 // Lets anyone see and delete what AltWarden holds about them, with no ticket.
 import { loadLanguage, t } from "/static/js/i18n.js";
 
+window.pageStarted = true;  // tells loading-guard.js this script loaded
 const content = document.getElementById("content");
 const KINDS = { ip: "Connection hash", cookie: "Browser cookie hash", fingerprint: "Browser fingerprint hash", device: "Device hash", os: "Operating system hash", browser: "Browser family hash" };
 
@@ -24,6 +25,11 @@ async function remove(csrf, guildId) {
   const sure = confirm(guildId ? t("Delete your records for this server? Your verified role there will be removed.") : t("Delete all your records? Your verified roles will be removed."));
   if (!sure) return;
   const response = await fetch("/api/me/delete", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify(guildId ? { guild_id: guildId } : {}) });
+  if (!response.ok) {
+    alert(t("Nothing was deleted. Your sign-in may have ended, so sign in again and retry."));
+    location.reload();
+    return;
+  }
   const result = await response.json();
   const kept = result.kept_for_ban?.length;
   alert(kept ? t("Deleted. Hashes tied to an active ban stay until the ban ends or they expire.") : t("Deleted."));
@@ -34,13 +40,14 @@ function record(entry, csrf) {
   const section = node("section", "", { class: "record" });
   section.append(node("h2", entry.guild_name));
   const lines = node("ul");
-  lines.append(node("li", `${t("Status")}: ${entry.status}${entry.verified_at ? ` (${date(entry.verified_at)})` : ""}`));
+  if (entry.status) lines.append(node("li", `${t("Status")}: ${entry.status}${entry.verified_at ? ` (${date(entry.verified_at)})` : ""}`));
   for (const kind of entry.stored_hashes) {
     lines.append(node("li", `${t(KINDS[kind.kind] ?? kind.kind)}: ${kind.count}, ${t("deleted by")} ${date(kind.expires_at)}`));
   }
   lines.append(node("li", `${t("Attempts on record")}: ${entry.attempts.length}`));
   if (entry.appeals.length) lines.append(node("li", `${t("Appeals on record")}: ${entry.appeals.length}`));
   if (entry.linked_accounts) lines.append(node("li", `${t("Links to another account")}: ${entry.linked_accounts}`));
+  if (entry.staff_actions) lines.append(node("li", `${t("Actions you took as staff")}: ${entry.staff_actions}`));
   section.append(lines);
   const button = node("button", t("Delete for this server"), { class: "button small danger" });
   button.addEventListener("click", () => remove(csrf, entry.guild_id));
@@ -73,4 +80,6 @@ async function main() {
     node("p", t("Hashes can't be turned back into your address or fingerprint. There's nothing readable to show."), { class: "faint" }));
 }
 
-main();
+main().catch(() => {
+  content.replaceChildren(node("p", t("Something went wrong. Please try again.")), node("a", t("Reload"), { class: "button", href: location.pathname }));
+});

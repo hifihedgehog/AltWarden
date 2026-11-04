@@ -1,18 +1,22 @@
 """DiscordPort on top of discord.py. Every call turns a Discord failure into a plain result."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import time
 from datetime import timedelta
 
+import aiohttp
 import discord
 from discord.http import Route
 
-from ..ports import ROLE_TOO_LOW, Button, GuildView, MemberInfo, Notice
+from ..ports import MEMBER_GONE, ROLE_TOO_LOW, Button, DiscordUnavailable, GuildView, MemberInfo, Notice
 
 log = logging.getLogger("altwarden.gateway")
 
+# discord.py raises its own errors for what Discord says, and lets connection errors through.
+FAILED = (discord.HTTPException, aiohttp.ClientError, OSError, asyncio.TimeoutError)
 COMMAND_LIST_SECONDS = 3600
 GUILD_CACHE_SECONDS = 30
 MEMBER_CACHE_SECONDS = 30
@@ -85,8 +89,10 @@ class Gateway:
             return member
         try:
             return await guild.fetch_member(int(user_id))
-        except discord.HTTPException:
+        except discord.NotFound:
             return None
+        except FAILED as exc:
+            raise DiscordUnavailable(str(exc)) from exc
 
     def forget_member(self, guild_id: str, user_id: str) -> None:
         self._members.pop((guild_id, user_id), None)
@@ -148,9 +154,12 @@ class Gateway:
         role = guild.get_role(int(role_id or 0))
         if role is None:
             return "That role no longer exists."
-        member = await self._resolve(guild_id, user_id)
+        try:
+            member = await self._resolve(guild_id, user_id)
+        except DiscordUnavailable:
+            return "Discord didn't answer. Try again in a moment."
         if member is None:
-            return "That member isn't in the server."
+            return MEMBER_GONE
         if guild.me is not None and role >= guild.me.top_role:
             return ROLE_TOO_LOW
         try:
@@ -162,6 +171,8 @@ class Gateway:
             return "AltWarden needs Manage Roles, and its role must sit above the role it gives."
         except discord.HTTPException as exc:
             return f"Discord refused the role change ({exc.status})."
+        except FAILED:
+            return "Discord didn't answer. Try again in a moment."
         self.forget_member(guild_id, user_id)
         return None
 
@@ -169,8 +180,9 @@ class Gateway:
         guild = self._guild(guild_id)
         try:
             await guild.kick(discord.Object(int(user_id)), reason=reason)
+            self.forget_member(guild_id, user_id)
             return True
-        except (discord.HTTPException, AttributeError) as exc:
+        except (*FAILED, AttributeError) as exc:
             log.warning("Kick failed in %s: %s", guild_id, exc)
             return False
 
@@ -178,8 +190,9 @@ class Gateway:
         guild = self._guild(guild_id)
         try:
             await guild.ban(discord.Object(int(user_id)), reason=reason, delete_message_seconds=delete_seconds)
+            self.forget_member(guild_id, user_id)
             return True
-        except (discord.HTTPException, AttributeError) as exc:
+        except (*FAILED, AttributeError) as exc:
             log.warning("Ban failed in %s: %s", guild_id, exc)
             return False
 
@@ -188,17 +201,19 @@ class Gateway:
         try:
             await guild.unban(discord.Object(int(user_id)), reason=reason)
             return True
-        except (discord.HTTPException, AttributeError):
+        except discord.NotFound:
+            return True  # there's no ban to lift, which is the outcome that was wanted
+        except (*FAILED, AttributeError):
             return False
 
     async def timeout(self, guild_id: str, user_id: str, minutes: int, reason: str) -> bool:
-        member = await self._resolve(guild_id, user_id)
-        if member is None:
-            return False
         try:
+            member = await self._resolve(guild_id, user_id)
+            if member is None:
+                return False
             await member.timeout(timedelta(minutes=minutes), reason=reason)
             return True
-        except discord.HTTPException:
+        except (*FAILED, DiscordUnavailable):
             return False
 
     async def is_banned(self, guild_id: str, user_id: str) -> bool:
@@ -208,28 +223,34 @@ class Gateway:
         try:
             await guild.fetch_ban(discord.Object(int(user_id)))
             return True
-        except discord.HTTPException:
+        except (discord.NotFound, discord.Forbidden):  # no ban, or no Ban Members to see one, which AltWarden only needs if it bans
             return False
+        except FAILED as exc:
+            raise DiscordUnavailable(str(exc)) from exc
 
     async def dm(self, user_id: str, notice: Notice) -> bool:
         try:
             user = self.client.get_user(int(user_id)) or await self.client.fetch_user(int(user_id))
             await user.send(**to_kwargs(notice))
             return True
-        except discord.HTTPException:
+        except FAILED:
             return False
 
     def _channel(self, channel_id: str):
         return self.client.get_channel(int(channel_id))
 
-    async def send(self, channel_id: str, notice: Notice) -> str | None:
+    async def send(self, channel_id: str, notice: Notice, *, guild_id: str | None = None) -> str | None:
+        """Post in a channel. With guild_id, only if the channel is in that server, because the lookup covers every server."""
         channel = self._channel(channel_id)
         if channel is None:
+            return None
+        if guild_id is not None and str(getattr(channel, "guild", None) and channel.guild.id) != guild_id:
+            log.warning("Refused to post in a channel outside server %s", guild_id)
             return None
         try:
             message = await channel.send(delete_after=notice.delete_after, **to_kwargs(notice))
             return str(message.id)
-        except discord.HTTPException as exc:
+        except FAILED as exc:
             log.warning("Couldn't post in %s: %s", channel_id, exc)
             return None
 
@@ -240,7 +261,7 @@ class Gateway:
         try:
             await channel.get_partial_message(int(message_id)).delete()
             return True
-        except discord.HTTPException:
+        except FAILED:
             return False
 
     async def edit_message(self, channel_id: str, message_id: str, notice: Notice) -> bool:
@@ -252,7 +273,7 @@ class Gateway:
         try:
             await channel.get_partial_message(int(message_id)).edit(**kwargs)
             return True
-        except discord.HTTPException:
+        except FAILED:
             return False
 
     async def pin(self, channel_id: str, message_id: str) -> bool:
@@ -262,12 +283,12 @@ class Gateway:
         try:
             await channel.get_partial_message(int(message_id)).pin()
             return True
-        except discord.HTTPException:
+        except FAILED:
             return False
 
-    async def open_help_thread(self, channel_id: str, name: str, user_id: str, role_id: str | None, notice: Notice) -> str | None:
+    async def open_help_thread(self, channel_id: str, name: str, user_id: str, role_id: str | None, notice: Notice, *, guild_id: str | None = None) -> str | None:
         channel = self._channel(channel_id)
-        if not isinstance(channel, discord.TextChannel):
+        if not isinstance(channel, discord.TextChannel) or (guild_id is not None and str(channel.guild.id) != guild_id):
             return None
         try:
             thread = await channel.create_thread(name=name[:90] or "Help", type=discord.ChannelType.private_thread, invitable=False,
@@ -280,10 +301,10 @@ class Gateway:
             message = await thread.send(**to_kwargs(notice))
             try:
                 await message.pin()
-            except discord.HTTPException:
+            except FAILED:
                 pass
             return str(thread.id)
-        except discord.HTTPException as exc:
+        except FAILED as exc:
             log.warning("Couldn't open a help thread: %s", exc)
             return None
 
@@ -293,20 +314,20 @@ class Gateway:
         if thread is None:
             try:
                 thread = await self.client.fetch_channel(int(thread_id))
-            except discord.HTTPException:
+            except FAILED:
                 return None
         return thread
 
     async def reopen_thread(self, thread_id: str) -> bool:
-        """Make sure a member's thread can be used. False means it no longer exists."""
+        """Make sure a member's thread can be used. False means it's gone, or locked so the member couldn't post in it."""
         thread = await self._thread(thread_id)
-        if thread is None:
+        if thread is None or thread.locked:
             return False
         try:
             if thread.archived:
                 await thread.edit(archived=False)
             return True
-        except discord.HTTPException:
+        except FAILED:
             return False
 
     async def close_thread(self, thread_id: str) -> bool:
@@ -316,7 +337,7 @@ class Gateway:
         try:
             await thread.edit(archived=True, locked=True)
             return True
-        except discord.HTTPException:
+        except FAILED:
             return False
 
     async def apply_profile(self, guild_id: str, profile: dict, style: dict | None = None) -> str | None:
@@ -337,6 +358,8 @@ class Gateway:
                 return "AltWarden needs Change Nickname for a custom name."
             except discord.HTTPException as exc:
                 return f"Discord refused the change ({exc.status})."
+            except FAILED:
+                return "Discord didn't answer, so the profile wasn't changed. Save again in a moment."
         self._guilds.pop(guild_id, None)
         if style is None:
             return None
@@ -346,6 +369,8 @@ class Gateway:
             return "AltWarden needs Change Nickname for a name style."
         except discord.HTTPException as exc:
             return f"Discord refused the name style ({exc.status}). The rest was saved."
+        except FAILED:
+            return "Discord didn't answer, so the name style wasn't changed. The rest was saved."
 
     async def _command_ids(self, application_id: int) -> dict[str, str]:
         """Every command's name and ID. They only change when the bot starts, so an hour's cache is plenty."""
@@ -364,7 +389,7 @@ class Gateway:
         try:
             names = await self._command_ids(application_id)
             rows = await self.client.http.get_guild_application_command_permissions(application_id, int(guild_id))
-        except discord.HTTPException as exc:
+        except FAILED as exc:
             log.warning("Couldn't read command permissions in %s: %s", guild_id, exc)
             return None
         found = {str(row["id"]): row["permissions"] for row in rows}

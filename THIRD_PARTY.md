@@ -15,8 +15,7 @@
 
 | Project | License | Used for |
 |---|---|---|
-| [CreepJS](https://github.com/abrahamjuliot/creepjs) | MIT | Native function tests, worker scope comparison, privacy browser detection, virtual GPU names |
-| [devtools-detect](https://github.com/sindresorhus/devtools-detect) | MIT | Window gap test |
+| [CreepJS](https://github.com/abrahamjuliot/creepjs) | MIT | Native function tests, the rule for a removed webdriver flag, worker scope comparison, privacy browser detection, virtual GPU names |
 | [devtools-detector](https://github.com/AEPKILL/devtools-detector) | MIT | Console timing test |
 | [ALTCHA](https://github.com/altcha-org/altcha) | MIT | Proof-of-work design |
 | [Discord Userdoccers](https://github.com/discord-userdoccers/discord-userdoccers) | CC BY-SA 4.0 | Name style fields, font and effect IDs |

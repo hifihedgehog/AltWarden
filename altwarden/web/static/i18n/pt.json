@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "Abra o link em uma janela normal, não em uma anônima.",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "Seu navegador está bloqueando os detalhes de que este servidor precisa. Use um navegador com as configurações padrão.",
   "This attempt scored too high on risk. Try another browser or connection.": "Esta tentativa teve risco alto demais. Tente outro navegador ou conexão.",
-  "Open the link on your own device, not inside a virtual machine.": "Abra o link no seu próprio dispositivo, não dentro de uma máquina virtual.",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "Este servidor não aceita celulares emulados ou modificados. Use um dispositivo normal."
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "Abra o link no seu próprio dispositivo, não dentro de uma máquina virtual. Se este for o seu computador, ative a aceleração de hardware nas configurações do navegador.",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "Este servidor não aceita celulares emulados ou modificados. Use um dispositivo normal.",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "Sua última tentativa não passou. Pressione \"Tentar novamente\" quando estiver pronto.",
+  "Please sign in again": "Faça login novamente",
+  "This server's rules changed, so Discord needs to confirm your account again.": "As regras deste servidor mudaram, então o Discord precisa confirmar sua conta de novo.",
+  "Actions you took as staff": "Ações que você fez como parte da equipe",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "Nada foi excluído. Seu login pode ter terminado, então entre de novo e tente outra vez."
 }

@@ -75,6 +75,7 @@ export async function render(view) {
   const root = h("div");
   view.append(root);
   part.redraw = () => draw();
+  part.invalid = () => root.querySelector("input:invalid");
 
   const customized = (message) => {
     const { author, ...words } = message;

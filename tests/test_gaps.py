@@ -67,7 +67,7 @@ class HelpFromThePage(Base):
         token = await self.link_for()
         await self.sign_in(token)
         await self.attempt(token, ip="45.33.32.7")
-        response = await self.client.post(f"/api/verify/{token}/help")
+        response = await self.client.post(f"/api/verify/{token}/help", headers=self.cookie_header("__Host-aw_browser"))
         self.assertEqual(response.status, 200, await response.text())
         self.assertIn(f"/channels/{GUILD}/", (await response.json())["url"])
 

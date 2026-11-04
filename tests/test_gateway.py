@@ -16,8 +16,11 @@ import aiohttp
 import discord
 from discord.http import Route
 
-from altwarden.bot.client import AltWardenBot
-from altwarden.ports import ROLE_TOO_LOW, Button, Notice
+from altwarden.bot.client import CATCH_UP_MARGIN, AltWardenBot
+import unittest.mock
+from unittest.mock import AsyncMock
+
+from altwarden.ports import ROLE_TOO_LOW, Button, DiscordUnavailable, Notice
 
 GUILD = 970000000000000001
 BOT = 970000000000000010
@@ -107,6 +110,345 @@ class PermissionNames(unittest.TestCase):
         everything = permission_names(discord.Permissions.all())
         for name in settings.PERMISSION_NAMES:
             self.assertIn(name, everything, name)
+
+
+class OtherServers(Base):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        other = dict(GUILD_PAYLOAD, id="970000000000000099", name="Someone else's server",
+                     channels=[{"id": "970000000000000098", "type": 0, "name": "general", "position": 0, "permission_overwrites": [], "parent_id": None, "guild_id": "970000000000000099"}])
+        self.bot._connection._add_guild_from_data(other)
+
+    async def test_a_channel_in_another_server_is_refused(self):
+        self.assertIsNone(await self.gateway.send("970000000000000098", Notice(content="hi"), guild_id=str(GUILD)))
+        self.assertEqual(self.requests, [])
+
+    async def test_a_channel_in_this_server_is_fine(self):
+        self.answers[("POST", f"/channels/{CHANNEL}/messages")] = message(CHANNEL)
+        self.assertEqual(await self.gateway.send(str(CHANNEL), Notice(content="hi"), guild_id=str(GUILD)), "555")
+
+    async def test_a_help_thread_stays_in_its_server(self):
+        self.assertIsNone(await self.gateway.open_help_thread("970000000000000098", "x", str(MEMBER), None, Notice(content="hi"), guild_id=str(GUILD)))
+        self.assertEqual(self.requests, [])
+
+
+class WhenDiscordFails(Base):
+    async def test_a_dropped_connection_comes_back_as_a_plain_result(self):
+        async def dropped(route, **kwargs):
+            raise aiohttp.ServerDisconnectedError()
+        self.bot.http.request = dropped
+        self.bot._connection._users.clear()
+        guild = str(GUILD)
+        self.assertFalse(await self.gateway.kick(guild, str(MEMBER), "x"))
+        self.assertFalse(await self.gateway.ban(guild, str(MEMBER), "x"))
+        self.assertFalse(await self.gateway.unban(guild, str(MEMBER), "x"))
+        with self.assertRaises(DiscordUnavailable):
+            await self.gateway.is_banned(guild, str(MEMBER))
+        self.assertFalse(await self.gateway.dm(str(MEMBER), Notice(content="hi")))
+        self.assertIsNone(await self.gateway.send(str(CHANNEL), Notice(content="hi")))
+        self.assertFalse(await self.gateway.delete_message(str(CHANNEL), "1"))
+        self.assertFalse(await self.gateway.edit_message(str(CHANNEL), "1", Notice(content="hi")))
+        self.assertFalse(await self.gateway.pin(str(CHANNEL), "1"))
+        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")))
+        self.assertFalse(await self.gateway.reopen_thread("970000000000000077"))
+        self.assertFalse(await self.gateway.close_thread("970000000000000077"))
+        self.assertIsNotNone(await self.gateway.add_role(guild, str(MEMBER), str(ROLE_LOW), "x"))
+        self.assertIsNotNone(await self.gateway.apply_profile(guild, {"nick": "x"}))
+        self.assertIsNone(await self.gateway.command_permissions(guild))
+
+    async def uncached(self):
+        self.bot.get_guild(GUILD)._remove_member(self.bot.get_guild(GUILD).get_member(MEMBER))
+        self.gateway.forget_member(str(GUILD), str(MEMBER))
+
+    async def test_gone_and_unreachable_arent_the_same(self):
+        await self.uncached()
+        self.answers[("GET", f"/guilds/{GUILD}/members/{MEMBER}")] = self.not_found()
+        self.assertIsNone(await self.gateway.member(str(GUILD), str(MEMBER)))
+        self.gateway.forget_member(str(GUILD), str(MEMBER))
+        self.answers[("GET", f"/guilds/{GUILD}/members/{MEMBER}")] = discord.DiscordServerError(SimpleNamespace(status=503, reason="Unavailable"), "down")
+        with self.assertRaises(DiscordUnavailable):
+            await self.gateway.member(str(GUILD), str(MEMBER))
+
+    async def test_an_unreachable_answer_isnt_remembered(self):
+        await self.uncached()
+        self.answers[("GET", f"/guilds/{GUILD}/members/{MEMBER}")] = discord.DiscordServerError(SimpleNamespace(status=503, reason="Unavailable"), "down")
+        with self.assertRaises(DiscordUnavailable):
+            await self.gateway.member(str(GUILD), str(MEMBER))
+        self.answers[("GET", f"/guilds/{GUILD}/members/{MEMBER}")] = member(MEMBER)
+        self.assertIsNotNone(await self.gateway.member(str(GUILD), str(MEMBER)))
+
+    async def test_a_locked_thread_counts_as_gone(self):
+        locked = thread()
+        locked["thread_metadata"]["locked"] = True
+        self.answers[("GET", f"/channels/{THREAD}")] = locked
+        self.assertFalse(await self.gateway.reopen_thread(str(THREAD)))
+        self.assertFalse([call for call in self.requests if call[0] == "PATCH"])
+
+
+class EventsAndCatchUp(Base):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.bot.service = SimpleNamespace(
+            on_leave=AsyncMock(), on_join=AsyncMock(), is_set_up=AsyncMock(return_value=True),
+            db=SimpleNamespace(member=AsyncMock(return_value=None), set_meta=AsyncMock(), get_meta=AsyncMock(return_value=None)))
+
+    async def test_a_member_outside_the_cache_leaving_still_counts(self):
+        guild = self.bot.get_guild(GUILD)
+        guild._remove_member(guild.get_member(MEMBER))
+        self.bot._connection.parse_guild_member_remove({"guild_id": str(GUILD), "user": user(MEMBER)})
+        await asyncio.sleep(0.05)
+        self.bot.service.on_leave.assert_awaited_once_with(str(GUILD), str(MEMBER))
+
+    async def test_a_cached_member_leaving_counts_once(self):
+        self.bot._connection.parse_guild_member_remove({"guild_id": str(GUILD), "user": user(MEMBER)})
+        await asyncio.sleep(0.05)
+        self.bot.service.on_leave.assert_awaited_once_with(str(GUILD), str(MEMBER))
+
+    def member_page(self, joined):
+        row = member(MEMBER)
+        row["joined_at"] = joined
+        return row
+
+    async def test_someone_who_joined_while_offline_is_handled(self):
+        self.answers[("GET", f"/guilds/{GUILD}/members?limit=1000")] = [self.member_page("2026-11-04T12:00:00+00:00")]
+        pages = iter([[self.member_page("2026-11-04T12:00:00+00:00")], []])
+
+        async def listing(route, **kwargs):
+            self.requests.append((route.method, route.url, kwargs))
+            return next(pages)
+        self.bot.http.request = listing
+        since = discord.utils.parse_time("2026-11-04T11:00:00+00:00").timestamp()
+        await self.bot._catch_up(since)
+        self.bot.service.on_join.assert_awaited_once()
+        self.assertEqual(self.bot.service.on_join.await_args.kwargs, {"catching_up": True})
+
+    async def test_someone_who_joined_before_the_gap_is_left_alone(self):
+        pages = iter([[self.member_page("2026-11-04T10:00:00+00:00")], []])
+
+        async def listing(route, **kwargs):
+            return next(pages)
+        self.bot.http.request = listing
+        await self.bot._catch_up(discord.utils.parse_time("2026-11-04T11:00:00+00:00").timestamp())
+        self.bot.service.on_join.assert_not_awaited()
+
+    async def test_the_last_online_time_moves_only_when_the_walk_finishes(self):
+        pages = iter([[]])
+
+        async def listing(route, **kwargs):
+            return next(pages)
+        self.bot.http.request = listing
+        await self.bot._catch_up(0.0)
+        self.bot.service.db.set_meta.assert_awaited_once()
+
+    async def test_a_walk_ending_while_the_gateway_is_down_leaves_the_time_alone(self):
+        pages = iter([[]])
+
+        async def listing(route, **kwargs):
+            return next(pages)
+        self.bot.http.request = listing
+        await self.bot.on_disconnect()
+        await self.bot._catch_up(0.0)
+        self.bot.service.db.set_meta.assert_not_awaited()
+
+    async def test_any_error_in_a_walk_is_retried_rather_than_given_up(self):
+        calls = []
+
+        async def listing(route, **kwargs):
+            calls.append(route.url)
+            if len(calls) <= 3:
+                raise RuntimeError("a bug, not a network error")
+            return []
+        self.bot.http.request = listing
+        with unittest.mock.patch("altwarden.bot.client.CATCH_UP_RETRY_SECONDS", 0), self.assertLogs("altwarden.bot", "ERROR"):
+            await self.bot._catch_up(0.0)
+        self.assertEqual(len(calls), 4)
+        self.bot.service.db.set_meta.assert_awaited_once()
+
+    async def test_a_gap_during_a_walk_walks_again(self):
+        pages = iter([[], []])
+        seen = []
+
+        async def listing(route, **kwargs):
+            seen.append(route.url)
+            if len(seen) == 1:
+                self.bot._catch_up_again = 50.0
+            return next(pages)
+        self.bot.http.request = listing
+        await self.bot._catch_up(100.0)
+        self.assertEqual(len(seen), 2)
+        self.assertIsNone(self.bot._catch_up_again)
+
+    async def test_a_failed_walk_tries_again(self):
+        calls = []
+
+        async def listing(route, **kwargs):
+            calls.append(route.url)
+            if len(calls) == 1:
+                raise aiohttp.ServerDisconnectedError()
+            return []
+        self.bot.http.request = listing
+        with unittest.mock.patch("altwarden.bot.client.CATCH_UP_RETRY_SECONDS", 0):
+            await self.bot._catch_up(0.0)
+        self.assertEqual(len(calls), 2)
+        self.bot.service.db.set_meta.assert_awaited_once()
+
+    async def test_one_members_failure_doesnt_stop_the_walk(self):
+        other = member(OWNER)
+        other["joined_at"] = "2026-11-04T12:00:00+00:00"
+        pages = iter([[self.member_page("2026-11-04T12:00:00+00:00"), other], []])
+
+        async def listing(route, **kwargs):
+            return next(pages)
+        self.bot.http.request = listing
+        self.bot.service.on_join = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        with self.assertLogs("altwarden.bot", "ERROR"):
+            await self.bot._catch_up(discord.utils.parse_time("2026-11-04T11:00:00+00:00").timestamp())
+        self.assertEqual(self.bot.service.on_join.await_count, 2)
+
+    async def test_the_time_is_read_before_the_timers_can_change_it(self):
+        self.bot.service.db.get_meta = AsyncMock(return_value=123.0)
+        self.bot.service.tick = AsyncMock()
+        await self.bot.setup_hook()
+        self.bot.minute_timer.cancel()
+        self.bot.hour_timer.cancel()
+        self.assertEqual(self.bot._missed_since, 123.0)
+
+    async def test_a_gateway_outage_counts_as_offline(self):
+        await self.bot.on_disconnect()
+        first = self.bot._disconnected_at
+        self.assertIsNotNone(first)
+        await self.bot.on_disconnect()
+        self.assertEqual(self.bot._disconnected_at, first, "the earliest moment counts")
+        await self.bot.on_resumed()
+        self.assertIsNone(self.bot._disconnected_at, "Discord replays what a resume missed")
+
+    async def test_a_resume_doesnt_forget_the_downtime_before_this_start(self):
+        self.bot._missed_since = 123.0
+        await self.bot.on_disconnect()
+        await self.bot.on_resumed()
+        self.assertEqual(self.bot._missed_since, 123.0)
+
+    async def test_someone_already_handled_is_left_alone(self):
+        self.bot.service.db.member = AsyncMock(return_value={"joined_at": discord.utils.parse_time("2026-11-04T12:30:00+00:00").timestamp()})
+        pages = iter([[self.member_page("2026-11-04T12:00:00+00:00")], []])
+
+        async def listing(route, **kwargs):
+            return next(pages)
+        self.bot.http.request = listing
+        await self.bot._catch_up(discord.utils.parse_time("2026-11-04T11:00:00+00:00").timestamp())
+        self.bot.service.on_join.assert_not_awaited()
+
+
+class ConnectionEvents(Base):
+    """Real READY and RESUMED parsing in discord.py, with only HTTP and the database replaced."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.writes = []
+        self.walks = []
+        self.on_guild_read = None
+
+        async def set_meta(key, value):
+            self.writes.append(value)
+
+        async def guild_row(guild_id):
+            if self.on_guild_read:
+                hook, self.on_guild_read = self.on_guild_read, None
+                hook()
+                await asyncio.sleep(0)
+            return {"id": guild_id}
+
+        self.bot.service = SimpleNamespace(
+            on_join=AsyncMock(), on_leave=AsyncMock(), is_set_up=AsyncMock(return_value=True), tick=AsyncMock(),
+            db=SimpleNamespace(member=AsyncMock(return_value=None), set_meta=set_meta, get_meta=AsyncMock(return_value=None), guild=guild_row,
+                               set_guild_field=AsyncMock(), mark_departed=AsyncMock(), save_settings=AsyncMock()))
+        self.bot.tree.sync = AsyncMock()
+        real = self.bot._catch_up
+
+        async def walk(since):
+            self.walks.append(since)
+            await real(since)
+        self.bot._catch_up = walk
+
+        async def listing(route, **kwargs):
+            return []
+        self.bot.http.request = listing
+        self.bot._connection.guild_ready_timeout = 0.05
+
+    def drop(self):
+        self.bot.dispatch("disconnect")
+
+    def ready(self):
+        state = self.bot._connection
+        state.parse_ready({"user": user(BOT, "altwarden", True), "session_id": "s", "resume_gateway_url": "wss://gateway.invalid",
+                           "guilds": [{"id": str(GUILD), "unavailable": True}], "application": {"id": "123", "flags": 0}})
+        state.parse_guild_create(GUILD_PAYLOAD)
+
+    def checked(self, moment):
+        return any(since <= moment - CATCH_UP_MARGIN for since in self.walks)
+
+    async def test_a_drop_then_a_new_session_looks_from_the_drop(self):
+        self.drop()
+        await asyncio.sleep(0)
+        gap = self.bot._disconnected_at
+        self.ready()
+        await asyncio.sleep(0.25)
+        self.assertTrue(self.checked(gap))
+
+    async def test_a_resume_right_after_a_new_session_keeps_the_first_gap(self):
+        self.drop()
+        await asyncio.sleep(0)
+        gap = self.bot._disconnected_at
+        self.ready()  # a new session, so nothing before it will be replayed
+        await asyncio.sleep(0.01)  # inside the library's wait for its servers, before on_ready
+        self.assertFalse(self.bot.is_ready())
+        self.drop()
+        await asyncio.sleep(0)
+        self.bot._connection.parse_resumed({})
+        await asyncio.sleep(0.25)
+        self.assertTrue(self.checked(gap))
+
+    async def test_a_drop_during_on_ready_stays_unchecked_until_the_next_session(self):
+        self.bot._missed_since = 1000.0
+        self.on_guild_read = self.drop
+        self.ready()
+        await asyncio.sleep(0.25)
+        self.assertIsNotNone(self.bot._disconnected_at, "on_ready leaves the new drop alone")
+        gap = self.bot._disconnected_at
+        written = len(self.writes)
+        await self.bot.minute_timer.coro(self.bot)
+        self.assertEqual(len(self.writes), written, "the time can't move during the outage")
+        self.ready()
+        await asyncio.sleep(0.25)
+        self.assertTrue(self.checked(gap))
+
+    async def test_a_plain_resume_looks_for_nothing(self):
+        self.drop()
+        await asyncio.sleep(0)
+        self.bot._connection.parse_resumed({})
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.walks, [])
+        self.assertIsNone(self.bot._disconnected_at)
+
+    async def test_the_very_first_start_looks_for_nothing(self):
+        self.ready()
+        await asyncio.sleep(0.25)
+        self.assertEqual(self.walks, [])
+        self.assertEqual(len(self.writes), 1)
+
+
+class Unbans(Base):
+    async def test_seeing_a_ban_without_ban_members_counts_as_none(self):
+        self.answers[("GET", f"/guilds/{GUILD}/bans/{MEMBER}")] = self.forbidden()
+        self.assertFalse(await self.gateway.is_banned(str(GUILD), str(MEMBER)))
+
+    async def test_no_ban_to_lift_counts_as_lifted(self):
+        self.answers[("DELETE", f"/guilds/{GUILD}/bans/{MEMBER}")] = self.not_found()
+        self.assertTrue(await self.gateway.unban(str(GUILD), str(MEMBER), "x"))
+
+    async def test_a_refusal_doesnt(self):
+        self.answers[("DELETE", f"/guilds/{GUILD}/bans/{MEMBER}")] = self.forbidden()
+        self.assertFalse(await self.gateway.unban(str(GUILD), str(MEMBER), "x"))
 
 
 class Reading(Base):

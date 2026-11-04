@@ -1,6 +1,7 @@
 // Lets a stopped member explain themselves to the server's staff.
 import { loadLanguage, t } from "/static/js/i18n.js";
 
+window.pageStarted = true;  // tells loading-guard.js this script loaded
 const content = document.getElementById("content");
 const guildId = location.pathname.split("/")[2];
 
@@ -20,6 +21,7 @@ async function main() {
       node("a", t("Continue with Discord"), { class: "button discord", href: `/login?for=member&next=/appeal/${guildId}` }));
     return;
   }
+  if (!response.ok) throw new Error("the server didn't answer");
   const data = await response.json();
   if (data.open) {
     content.replaceChildren(node("h1", t("Your appeal is waiting")), node("p", t("Staff will reply by DM.")));
@@ -48,4 +50,6 @@ async function main() {
     box, note, send);
 }
 
-main();
+main().catch(() => {
+  content.replaceChildren(node("p", t("Something went wrong. Please try again.")), node("a", t("Reload"), { class: "button", href: location.pathname }));
+});

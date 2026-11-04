@@ -215,7 +215,7 @@ class BypassLinks(Helpers):
         self.assertTrue(told)
         self.assertEqual(self.port.dms, [])
         channel, notice = next(item for item in self.port.sent if item[1].mention_users)
-        self.assertEqual(channel, LOG_CHANNEL)
+        self.assertEqual(channel, CHANNEL)
         self.assertNotIn(url, notice.content)
         self.assertIn(CHANNEL, notice.content)
 
@@ -482,7 +482,7 @@ class DashboardParity(Helpers):
     async def test_turning_the_honeypot_on_posts_its_warning(self):
         await self.log_in()
         changed = await self.current()
-        changed["honeypot"].update(enabled=True, channel=CHANNEL)
+        changed["honeypot"].update(enabled=True, channel=LOG_CHANNEL)
         self.assertEqual((await self.put(changed)).status, 200)
         self.assertIn("honeypot", self.posted)
 
@@ -698,6 +698,27 @@ class SignInLimits(Base):
         codes = [(await self.client.get("/login", allow_redirects=False)).status for _ in range(30)]
         self.assertIn(429, codes)
         self.assertEqual(codes[0], 302)
+
+
+class PermissionDefaults(unittest.TestCase):
+    def test_a_rule_at_its_default_is_not_stored(self):
+        from altwarden import settings as module
+        document = module.defaults()
+        document["permissions"] = {
+            "pages": {"settings": {"view": {"required": list(module.PAGE_DEFAULTS["settings"]["view"]), "overrides": []},
+                                   "edit": {"required": ["view_audit_log"], "overrides": []}}},
+            "commands": {"lookup": {"required": list(module.COMMAND_DEFAULTS["lookup"]), "overrides": []},
+                         "raid": {"required": ["ban_members"], "overrides": []}},
+        }
+        saved = module.normalize(document)["permissions"]
+        self.assertEqual(saved["pages"], {"settings": {"edit": {"required": ["view_audit_log"], "overrides": []}}})
+        self.assertEqual(saved["commands"], {"raid": {"required": ["ban_members"], "overrides": []}})
+
+    def test_a_rule_left_out_still_reads_as_its_default(self):
+        from altwarden import settings as module
+        document = module.normalize(module.defaults())
+        self.assertEqual(module.page_rule(document, "members", "view")["required"], module.PAGE_DEFAULTS["members"]["view"])
+        self.assertEqual(module.command_rule(document, "lookup")["required"], module.COMMAND_DEFAULTS["lookup"])
 
 
 class ListRefresh(unittest.IsolatedAsyncioTestCase):
@@ -920,7 +941,7 @@ class Coverage(Helpers):
         calls = []
         original = self.port.open_help_thread
 
-        async def spy(channel_id, name, user_id, role_id, notice):
+        async def spy(channel_id, name, user_id, role_id, notice, **_):
             calls.append(notice)
             return await original(channel_id, name, user_id, role_id, notice)
         self.port.open_help_thread = spy

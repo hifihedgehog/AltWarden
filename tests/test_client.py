@@ -371,11 +371,22 @@ class Hooks(Client):
         document["honeypot"].update(enabled=True, channel=LOG_CHANNEL, action="log")
         await self.service.save_settings(GUILD, document)
         message = SimpleNamespace(
-            guild=SimpleNamespace(id=int(GUILD)), id=7, webhook_id=None,
+            guild=SimpleNamespace(id=int(GUILD)), id=7, webhook_id=None, is_system=lambda: False,
             author=SimpleNamespace(id=int(OTHER_USER), name="spam", roles=()),
             channel=SimpleNamespace(id=99999999999999999, parent_id=int(LOG_CHANNEL)))
         await self.bot.on_message(message)
         self.assertTrue(self.port.did("delete_message"))
+
+    async def test_a_system_message_in_the_trap_is_nobodys_post(self):
+        document = await self.service.get_settings(GUILD)
+        document["honeypot"].update(enabled=True, channel=LOG_CHANNEL, action="ban")
+        await self.service.save_settings(GUILD, document)
+        message = SimpleNamespace(
+            guild=SimpleNamespace(id=int(GUILD)), id=7, webhook_id=None, is_system=lambda: True,
+            author=SimpleNamespace(id=int(STAFF), name="staff", roles=()),
+            channel=SimpleNamespace(id=int(LOG_CHANNEL), parent_id=None))
+        await self.bot.on_message(message)
+        self.assertFalse(self.port.did("ban"))
 
     async def test_a_server_added_while_offline_gets_a_row(self):
         await self.db.run("DELETE FROM guilds")

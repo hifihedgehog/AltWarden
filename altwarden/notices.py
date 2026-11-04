@@ -10,6 +10,7 @@ AMBER = 0xF5A524
 TEAL = 0x1FB8A6
 GRAY = 0x7A8596
 DESCRIPTION_LIMIT = 4096
+EMBED_LIMIT = 6000
 
 
 def check_name(check_id: str | None) -> str:
@@ -60,7 +61,9 @@ def failed_notice(guild_name: str, reason: str, text: str, action: str, public_u
     body = (text if show_reason else "You didn't pass this server's checks.") + (f"\n\n{what}" if what else "")
     if show_reason and retry_on:
         body += f"\n\nYou can try again after <t:{int(retry_on)}:f>."
-    buttons = [Button("What to do", url=f"{public_url}/help/{HELP_SLUG.get(reason, 'verification')}", style="link")]
+    # With reasons hidden, a page named after the check would give the reason away.
+    slug = HELP_SLUG.get(reason, "verification") if show_reason else "verification"
+    buttons = [Button("What to do", url=f"{public_url}/help/{slug}", style="link")]
     if retry_url and action == "deny":
         buttons.insert(0, Button("Try again", url=retry_url, style="link"))
     if appeal_url:
@@ -118,8 +121,10 @@ def _embed(message: dict, guild_name: str, public_url: str = "") -> dict:
         # A customized message names who wrote it, so nobody can pass off a scam as AltWarden's own words.
         report = f" [Report it]({public_url}/security#abuse)" if public_url else ""
         line = f"\n\n*Written by <@{author}> on this server's staff.*{report}"
-    # Discord's limit is 4096. A long server name in {server} mustn't cost the writer's line, or the whole post.
-    embed = {"title": message["title"], "description": description[:DESCRIPTION_LIMIT - len(line)] + line, "color": message["color"]}
+    # Discord's limits are 4096 here and 6000 across the embed. A long server name in {server} mustn't cost the
+    # writer's line, or the whole post.
+    room = min(DESCRIPTION_LIMIT, EMBED_LIMIT - len(message["title"]) - len(message["footer"])) - len(line)
+    embed = {"title": message["title"], "description": description[:room] + line, "color": message["color"]}
     if message["thumbnail"]:
         embed["thumbnail"] = {"url": message["thumbnail"]}
     if message["image"]:

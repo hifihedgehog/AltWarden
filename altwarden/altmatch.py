@@ -1,10 +1,11 @@
 """Decides whether a member is a second account of someone already in this server.
 
-One matching value doesn't prove much: a family shares an address, and every iPhone of one model
-looks alike. So each kind of evidence carries a weight, and staff see how strong the link is.
+One matching value doesn't prove much: a family shares an address, and machines of one model look
+alike to a browser. FingerprintJS itself rates its identifier as no better than a coin toss on
+Android and Safari. So each kind of evidence carries a weight, and staff see how strong the link is.
 
     cookie       100  the same browser, using a cookie only this site can have set
-    fingerprint   70  the same browser setup (35 on iPhones and iPads, which look alike)
+    fingerprint   45  the same browser setup (10 on phones, tablets and Chromebooks, which look alike)
     ip            35  the same connection (10 on mobile, VPN and carrier-shared addresses)
     device        20  the same kind of machine, seen across browsers
 
@@ -13,7 +14,8 @@ looks alike. So each kind of evidence carries a weight, and staff see how strong
     possible     30 or more
 
 A shared home connection alone scores 35, which is "possible", so by default it never blocks a
-sibling. A cookie alone, or a fingerprint plus a connection, is enough to act on.
+sibling. A cookie alone, or a fingerprint plus a connection, is enough to act on. Two strangers with
+the same laptop score 65 and two phones on one Wi-Fi score 65, so neither is acted on by default.
 
 Everything happens inside one server. Digests are keyed per server, so there is no way to compare
 across servers, and this module has no query that could.
@@ -22,8 +24,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-WEIGHTS = {"cookie": 100, "fingerprint": 70, "ip": 35, "device": 20}
-WEAK_WEIGHTS = {"fingerprint": 35, "ip": 10}
+WEIGHTS = {"cookie": 100, "fingerprint": 45, "ip": 35, "device": 20}
+WEAK_WEIGHTS = {"fingerprint": 10, "ip": 10}
 LEVELS = (("confirmed", 100), ("likely", 70), ("possible", 30))
 RANK = {"none": 0, "possible": 1, "likely": 2, "confirmed": 3}
 # A server's switches cover these kinds of evidence. "device" rides on the fingerprint switch.
@@ -49,15 +51,16 @@ class Link:
     other_is_main: bool = True
     same_os: bool | None = None
     same_browser: bool | None = None
+    verified: bool = False
 
     def as_dict(self) -> dict:
-        return {"account": self.other_id, "confidence": self.confidence, "score": self.score,
-                "methods": self.methods, "banned": self.banned, "same_os": self.same_os, "same_browser": self.same_browser}
+        return {"account": self.other_id, "confidence": self.confidence, "score": self.score, "methods": self.methods, "banned": self.banned,
+                "other_is_main": self.other_is_main, "same_os": self.same_os, "same_browser": self.same_browser}
 
 
 async def find_links(db, guild_id: str, user_id: str, digests: dict[str, str], *, methods: dict, weak_fingerprint: bool,
                      weak_ip: bool) -> list[Link]:
-    """Every earlier account sharing evidence with this one, strongest first."""
+    """Every account sharing evidence with this one, strongest first. `strongest` decides which of them count."""
     evidence: dict[str, dict[str, int]] = {}
     for kind, digest in digests.items():
         if not digest or not methods.get(METHOD_FOR_KIND[kind], False):
@@ -76,9 +79,11 @@ async def find_links(db, guild_id: str, user_id: str, digests: dict[str, str], *
         confidence = confidence_for(score)
         if confidence == "none":
             continue
-        links.append(Link(other_id, score, confidence, sorted(kinds, key=WEIGHTS.get, reverse=True),
-                          banned=await db.is_banned(guild_id, other_id)))
-    links.sort(key=lambda link: (link.banned, link.score), reverse=True)
+        record = await db.member(guild_id, other_id)
+        links.append(Link(other_id, score, confidence, sorted(kinds, key=WEIGHTS.get, reverse=True), banned=await db.is_banned(guild_id, other_id),
+                          verified=bool(record and (record["first_verified_at"] or record["status"] == "approved"))))
+    # Accounts that count go first, or a pile of failed attempts could push the one real match out of the list.
+    links.sort(key=lambda link: (link.banned, link.verified, link.score), reverse=True)
     return links
 
 
@@ -92,10 +97,14 @@ async def compare_profiles(db, guild_id: str, links: list[Link], profile: dict[s
 
 
 def strongest(links: list[Link], minimum: str) -> Link | None:
-    """The link to act on, if any reaches the server's chosen confidence."""
+    """The link to act on, if any reaches the server's chosen confidence.
+
+    Someone who tried and never got in, and wasn't banned, isn't an account this one can be a second
+    account of. Anyone who ever got in still counts, even after failing a later check or leaving.
+    """
     floor = RANK.get(minimum, RANK["likely"])
     for link in links:
-        if RANK[link.confidence] >= floor:
+        if RANK[link.confidence] >= floor and (link.banned or link.verified):
             return link
     return None
 
@@ -104,6 +113,6 @@ async def assign_roles(db, guild_id: str, user_id: str, link: Link) -> None:
     """The account that verified first is the main one. Anything else is the alt."""
     mine = await db.member(guild_id, user_id)
     theirs = await db.member(guild_id, link.other_id)
-    my_time = (mine or {}).get("verified_at")
-    their_time = (theirs or {}).get("verified_at")
+    my_time = (mine or {}).get("first_verified_at")
+    their_time = (theirs or {}).get("first_verified_at")
     link.other_is_main = not (my_time and (not their_time or my_time < their_time))

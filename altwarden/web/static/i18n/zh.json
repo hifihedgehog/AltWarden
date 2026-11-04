@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "请在普通窗口中打开链接，不要使用无痕窗口。",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "你的浏览器阻止了此服务器需要的信息。请使用默认设置的浏览器。",
   "This attempt scored too high on risk. Try another browser or connection.": "此次尝试的风险评分过高。请换一个浏览器或网络连接试试。",
-  "Open the link on your own device, not inside a virtual machine.": "请在你自己的设备上打开链接，不要在虚拟机中打开。",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "此服务器不接受模拟或被修改过的手机。请使用普通设备。"
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "请在你自己的设备上打开链接，不要在虚拟机中打开。如果这是你自己的电脑，请在浏览器设置中开启硬件加速。",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "此服务器不接受模拟或被修改过的手机。请使用普通设备。",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "你上次的尝试未通过。准备好后请按“重试”。",
+  "Please sign in again": "请重新登录",
+  "This server's rules changed, so Discord needs to confirm your account again.": "此服务器的规则已更改，因此 Discord 需要再次确认你的帐户。",
+  "Actions you took as staff": "你作为工作人员执行的操作",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "没有删除任何内容。你的登录可能已结束，请重新登录后再试。"
 }

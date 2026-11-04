@@ -38,6 +38,10 @@ HTMLCanvasElement.prototype.toDataURL = function (...args) {
   return original.apply(this, args);
 };"""
 HIDE_WEBDRIVER = """Object.defineProperty(Navigator.prototype, 'webdriver', { get() { return false; } });"""
+OWN_WEBDRIVER = """Object.defineProperty(navigator, 'webdriver', { get: () => false });"""
+NO_WEBDRIVER = """delete Navigator.prototype.webdriver;"""
+PROXY_CORES = """const real = Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency');
+Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', { ...real, get: new Proxy(real.get, { apply: () => 4 }) });"""
 REWRITE_TOSTRING = """const real = Function.prototype.toString; Function.prototype.toString = function () { return real.call(this); };"""
 
 
@@ -145,6 +149,14 @@ async def main():
         summary("Rewritten toString: tamper score should rise", report, agent)
         report, agent = await collect(http, user_agent=normal, inject=HIDE_WEBDRIVER)
         summary("Rewritten webdriver getter: should be automated", report, agent)
+        report, agent = await collect(http, user_agent=normal, inject=OWN_WEBDRIVER)
+        summary("Webdriver set on the object: should be automated", report, agent)
+        report, agent = await collect(http, user_agent=normal, inject=NO_WEBDRIVER)
+        summary("Webdriver removed: should be automated", report, agent)
+        report, agent = await collect(http, user_agent=normal, flags=("--disable-blink-features=AutomationControlled",))
+        summary("The usual flag for hiding automation: the driver still shows as developer tools", report, agent)
+        report, agent = await collect(http, user_agent=normal, inject=PROXY_CORES)
+        summary("Core count wrapped in a Proxy: should be anti-detect", report, agent)
         report, agent = await collect(http, user_agent=normal, flags=("--inprivate",))
         summary("Private window: should be private", report, agent)
         print("\nbaseline fingerprint stable across two runs:", end=" ")

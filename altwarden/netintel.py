@@ -285,6 +285,7 @@ class NetIntel:
     """Local lookups, plus the weekly refresh."""
 
     def __init__(self, folder: str | Path):
+        self._refreshing = asyncio.Lock()
         self.folder = Path(folder)
         self.lists = ListSet()
 
@@ -335,23 +336,24 @@ class NetIntel:
 
     async def refresh(self, session: aiohttp.ClientSession | None = None) -> int:
         """Download each list that's missing or old, replacing a file only after a good download. Returns how many changed."""
-        owned = session is None
-        session = session or aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
-        changed = 0
-        try:
-            for name, url in SOURCES.items():
-                if self._fresh(name):
-                    continue
-                try:
-                    changed += await self._fetch(session, name, url)
-                except Exception as exc:
-                    log.warning("Could not refresh %s: %s", name, exc)
-        finally:
-            if owned:
-                await session.close()
-        if changed:
-            await self.load()
-        return changed
+        async with self._refreshing:  # startup and the hourly timer can both want this on a first run
+            owned = session is None
+            session = session or aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
+            changed = 0
+            try:
+                for name, url in SOURCES.items():
+                    if self._fresh(name):
+                        continue
+                    try:
+                        changed += await self._fetch(session, name, url)
+                    except Exception as exc:
+                        log.warning("Could not refresh %s: %s", name, exc)
+            finally:
+                if owned:
+                    await session.close()
+            if changed:
+                await self.load()
+            return changed
 
     async def _fetch(self, session: aiohttp.ClientSession, name: str, url: str) -> int:
         target = self.folder / name

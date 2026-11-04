@@ -213,6 +213,11 @@
   "Open the link in a normal window, not a private one.": "Ouvre le lien dans une fenêtre normale, pas dans une fenêtre privée.",
   "Your browser is blocking the details this server needs. Use a browser with default settings.": "Ton navigateur bloque les infos dont ce serveur a besoin. Utilise un navigateur avec les réglages par défaut.",
   "This attempt scored too high on risk. Try another browser or connection.": "Cette tentative a un score de risque trop élevé. Essaie un autre navigateur ou une autre connexion.",
-  "Open the link on your own device, not inside a virtual machine.": "Ouvre le lien sur ton propre appareil, pas dans une machine virtuelle.",
-  "This server doesn't accept emulated or modified phones. Use a regular device.": "Ce serveur n'accepte pas les téléphones émulés ou modifiés. Utilise un appareil normal."
+  "Open the link on your own device, not inside a virtual machine. If this is your own computer, turn on hardware acceleration in your browser's settings.": "Ouvre le lien sur ton propre appareil, pas dans une machine virtuelle. Si c'est ton propre ordinateur, active l'accélération matérielle dans les réglages du navigateur.",
+  "This server doesn't accept emulated or modified phones. Use a regular device.": "Ce serveur n'accepte pas les téléphones émulés ou modifiés. Utilise un appareil normal.",
+  "Your last attempt didn't pass. Press Try again when you're ready.": "Ta dernière tentative n'a pas abouti. Appuie sur « Réessayer » quand tu es prêt.",
+  "Please sign in again": "Reconnecte-toi",
+  "This server's rules changed, so Discord needs to confirm your account again.": "Les règles de ce serveur ont changé, donc Discord doit confirmer ton compte à nouveau.",
+  "Actions you took as staff": "Actions effectuées en tant que membre de l'équipe",
+  "Nothing was deleted. Your sign-in may have ended, so sign in again and retry.": "Rien n'a été supprimé. Ta connexion a peut-être expiré : reconnecte-toi et réessaie."
 }

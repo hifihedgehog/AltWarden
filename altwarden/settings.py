@@ -114,7 +114,7 @@ def _snowflake(value: Any) -> str | None:
 def _int(value: Any, low: int, high: int, fallback: int) -> int:
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # JSON's 1e999 arrives as infinity
         return fallback
     return max(low, min(high, number))
 
@@ -296,7 +296,7 @@ def _normalize_check(check_id: str, raw: dict, base: dict) -> dict:
         countries = raw.get("countries") if isinstance(raw.get("countries"), list) else []
         result["countries"] = sorted({c.upper() for c in countries if isinstance(c, str) and re.fullmatch(r"[A-Za-z]{2}", c)})
         overrides = raw.get("overrides") if isinstance(raw.get("overrides"), dict) else {}
-        result["overrides"] = {str(key)[:24]: value for key, value in list(overrides.items())[:320] if value in ACTIONS}
+        result["overrides"] = {str(key)[:64]: value for key, value in list(overrides.items())[:320] if value in ACTIONS}
     return result
 
 
@@ -437,11 +437,14 @@ def normalize(raw: Any) -> dict:
     pages: dict[str, dict] = {}
     for page, levels in PAGE_DEFAULTS.items():
         stored = pages_in.get(page) if isinstance(pages_in.get(page), dict) else {}
-        kept = {level: _normalize_rule(stored[level], default) for level, default in levels.items() if level in stored}
+        # A rule at its default isn't stored, so one saved change doesn't pin every other rule to today's default.
+        kept = {level: rule for level, default in levels.items()
+                if level in stored and (rule := _normalize_rule(stored[level], default)) != _normalize_rule(None, default)}
         if kept:
             pages[page] = kept
     commands_in = perms.get("commands") if isinstance(perms.get("commands"), dict) else {}
-    commands = {name: _normalize_rule(commands_in[name], default) for name, default in COMMAND_DEFAULTS.items() if name in commands_in}
+    commands = {name: rule for name, default in COMMAND_DEFAULTS.items()
+                if name in commands_in and (rule := _normalize_rule(commands_in[name], default)) != _normalize_rule(None, default)}
     result["permissions"] = {"pages": pages, "commands": commands}
 
     result["preset"] = detect_preset(result)
@@ -468,6 +471,12 @@ def problem_items(settings: dict) -> list[dict]:
         add("Pick a honeypot channel.", "honeypot")
     if core["unverified_enabled"] and core["unverified_role"] == core["verified_role"]:
         add("The verified and unverified roles must be different.", "unverified")
+    # A member at the attempt limit would get the role the limit is keeping from them.
+    if settings["checks"]["max_attempts"]["role"] and settings["checks"]["max_attempts"]["role"] == core["verified_role"]:
+        add("The attempt limit role can't be the verified role.", "max_attempts")
+    # A trap in the channel members verify in would catch their help threads and their questions.
+    if settings["honeypot"]["enabled"] and settings["honeypot"]["channel"] and settings["honeypot"]["channel"] == core["channel"]:
+        add("The honeypot channel can't be the verification channel.", "honeypot")
     return found
 
 

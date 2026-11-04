@@ -19,7 +19,7 @@
       <li>Your IP address, email, cookie and browser fingerprint are never stored in readable form.</li>
       <li>Your Discord sign-in is revoked seconds after it's used.</li>
       <li>The verification page has no ads, analytics or other outside scripts.</li>
-      <li>Records in one server can't be connected to records in another.</li>
+      <li>The hashes in one server can't be connected to the hashes in another. Your Discord ID is stored as it is, so staff can see who verified.</li>
       <li>You can see and delete your data yourself at <a href="/my-data">My data</a>.</li>
     </ul>
 
@@ -27,7 +27,7 @@
     <table>
       <tr><th>Data</th><th>What happens to it</th></tr>
       <tr><td>Discord ID, username, profile picture</td><td>Stored, so staff can see who verified.</td></tr>
-      <tr><td>Whether two-factor login is on</td><td>Checked, then kept only until your attempt ends.</td></tr>
+      <tr><td>Whether two-factor login is on</td><td>Kept with your link while you can still retry. It goes when your attempt finishes, and otherwise when the link ends.</td></tr>
       <tr><td>Your email address</td><td>Only requested if the server turned on the throwaway email check. The domain is compared with a list, then the address is dropped. It's never written down.</td></tr>
       <tr><td>IP address</td><td>Compared in memory with lists of VPNs, data centers and countries. A keyed hash is stored for alt matching. The address isn't stored.</td></tr>
       <tr><td>Browser and device details</td><td>Compared to find spoofing, automation and virtual machines. Only the result is stored, as labels such as "private window". A browser identifier and a device value are stored as keyed hashes.</td></tr>
@@ -46,6 +46,8 @@
       <tr><td>Attempt history, staff audit log, decided appeals</td><td>365 days</td><td>30 to 730 days</td></tr>
       <tr><td>Links between accounts</td><td>365 days</td><td>Follows the browser and device setting</td></tr>
       <tr><td>Name and picture of someone who never tried to verify</td><td>365 days</td><td>Follows the attempt history setting</td></tr>
+      <tr><td>That you verified, with your name and picture</td><td>Until you delete it</td><td>Needed to let you back in when you rejoin</td></tr>
+      <tr><td>Accounts staff marked as different people</td><td>Until either person deletes their data</td><td>Not a setting</td></tr>
       <tr><td>Hashes of banned accounts, and the record of the ban</td><td>730 days</td><td>0 to 1,825 days</td></tr>
       <tr><td>Verification links</td><td>1 hour, or the server's kick time</td><td>Bypass links last up to 7 days</td></tr>
     </table>
@@ -56,6 +58,7 @@
       <tr><th>Cookie</th><th>What it does</th><th>How long it lasts</th></tr>
       <tr><td><code>__Host-aw_device</code></td><td>A random value that recognizes the same browser. Only its keyed hash is stored.</td><td>The server's browser hash setting, up to 400 days</td></tr>
       <tr><td><code>__Host-aw_flow</code></td><td>Ties a Discord sign-in to the browser that started it.</td><td>15 minutes, and deleted when the sign-in ends</td></tr>
+      <tr><td><code>__Host-aw_browser</code></td><td>Ties a verification link to the browser that signed in, so nobody can pass a check on someone else's browser. It's hashed together with the link, so it can't connect two servers.</td><td>Until you close your browser</td></tr>
       <tr><td><code>__Host-aw_session</code></td><td>Keeps staff signed in to the dashboard, or a member signed in to My data.</td><td>12 hours for the dashboard, 30 minutes for members</td></tr>
     </table>
     <p>None of them can be read by scripts, and none is shared with anyone. The dashboard also remembers its theme and accent color in your browser, which never leaves your device.</p>
@@ -69,8 +72,9 @@
 
     <h2>Your choices</h2>
     <p>Sign in at <a href="/my-data">My data</a> to see everything held about you and delete it, for one server or all of them, with no request to anyone. Deleting your records also removes your verified role, because there's nothing left to support it, and you can verify again whenever you like.</p>
-    <p>Deleting also removes staff records about you, such as a note that staff verified you, and takes your name off anything you did as staff.</p>
-    <p>One exception: if you're banned from a server, your hashes for that server stay until the ban ends or they expire. Otherwise a banned account could erase the only thing that catches its next account. Your history is still deleted.</p>
+    <p>Deleting also removes staff records about you, such as a note that staff verified you, takes your name off anything you did as staff, and removes your ID from other people's records.</p>
+    <p>Two exceptions. If you're banned from a server, your hashes for that server stay until the ban ends or they expire, and they go at once when it ends. Otherwise a banned account could erase the only thing that catches its next account. Your name, picture and history are still deleted.</p>
+    <p>If a server limits attempts, makes you wait between them, or gives you a time limit to verify, your Discord ID stays with that count and timer, with no name or picture, until the attempt history setting removes it, counted from your last failed attempt. Otherwise deleting your data would reset the limit.</p>
     <p>You can decline by not verifying. Each server decides whether it offers another way in.</p>
 
     <h2>Automated decisions</h2>

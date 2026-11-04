@@ -59,54 +59,60 @@ async def run(args: argparse.Namespace) -> None:
     keys = Keyring(decode_master_key(os.environ["MASTER_KEY"]))
     db = Database(data_dir / "altwarden.db")
     await db.open()
-    net = NetIntel(data_dir / "lists")
-    await net.load()
-
-    bot = AltWardenBot()
-    service = Service(db, keys, net, bot.gateway, args.public_url, load_regions(), load_zone_countries())
-    bot.service = service
-
-    http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
-    token = os.environ["DISCORD_TOKEN"]
-    await bot.login(token)
-    application = await bot.application_info()
-    oauth = DiscordOAuth(http, str(application.id), os.environ["DISCORD_CLIENT_SECRET"])
-    app = build_app(service, keys, oauth, trust_proxy=True)
-    app["http"] = http
-    webhook_http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicResolver()))
-    app["webhook_http"] = webhook_http
-    app["post_message"] = bot.post_message
-    service.webhook_sender = lambda guild_id, event, payload: send_webhooks(app, guild_id, event, payload)
-    proxycheck_key = os.environ.get("PROXYCHECK_KEY")
-    if proxycheck_key:
-        service.proxycheck = lambda ip: external_lookup(http, ip, proxycheck_key)
-
-    runner = web.AppRunner(app, access_log=None)  # request logs would hold members' addresses
-    await runner.setup()
-    await web.TCPSite(runner, args.host, args.port).start()
-    log.info("AltWarden %s serving %s on %s:%s", __version__, args.public_url, args.host, args.port)
-    refresh = asyncio.ensure_future(net.refresh()) if net.stale() else None  # held here, because asyncio keeps only a weak reference
-    connection = asyncio.ensure_future(bot.connect(reconnect=True))
-    stopping = asyncio.Event()
-    for name in (signal.SIGTERM, signal.SIGINT):
-        try:
-            asyncio.get_running_loop().add_signal_handler(name, stopping.set)
-        except NotImplementedError:  # Windows has no signal handlers on the event loop
-            pass
-    stop_waiter = asyncio.ensure_future(stopping.wait())
+    # Whatever fails below, the database has to close. Its worker thread keeps the process alive
+    # otherwise, and a process that won't die is one systemd never restarts.
+    bot = http = webhook_http = runner = refresh = stop_waiter = None
     try:
+        net = NetIntel(data_dir / "lists")
+        await net.load()
+
+        bot = AltWardenBot()
+        service = Service(db, keys, net, bot.gateway, args.public_url, load_regions(), load_zone_countries())
+        bot.service = service
+
+        http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+        token = os.environ["DISCORD_TOKEN"]
+        await bot.login(token)
+        application = await bot.application_info()
+        oauth = DiscordOAuth(http, str(application.id), os.environ["DISCORD_CLIENT_SECRET"])
+        app = build_app(service, keys, oauth, trust_proxy=True)
+        app["http"] = http
+        webhook_http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicResolver()))
+        app["webhook_http"] = webhook_http
+        app["post_message"] = bot.post_message
+        service.webhook_sender = lambda guild_id, event, payload: send_webhooks(app, guild_id, event, payload)
+        proxycheck_key = os.environ.get("PROXYCHECK_KEY")
+        if proxycheck_key:
+            service.proxycheck = lambda ip: external_lookup(http, ip, proxycheck_key)
+
+        runner = web.AppRunner(app, access_log=None)  # request logs would hold members' addresses
+        await runner.setup()
+        await web.TCPSite(runner, args.host, args.port).start()
+        log.info("AltWarden %s serving %s on %s:%s", __version__, args.public_url, args.host, args.port)
+        refresh = asyncio.ensure_future(net.refresh()) if net.stale() else None  # held here, because asyncio keeps only a weak reference
+        connection = asyncio.ensure_future(bot.connect(reconnect=True))
+        stopping = asyncio.Event()
+        for name in (signal.SIGTERM, signal.SIGINT):
+            try:
+                asyncio.get_running_loop().add_signal_handler(name, stopping.set)
+            except NotImplementedError:  # Windows has no signal handlers on the event loop
+                pass
+        stop_waiter = asyncio.ensure_future(stopping.wait())
         await asyncio.wait({connection, stop_waiter}, return_when=asyncio.FIRST_COMPLETED)
         if connection.done():
             connection.result()  # a failed login or gateway error should end the process, so systemd restarts it
         log.info("Shutting down")
     finally:
-        stop_waiter.cancel()
-        if refresh is not None:
-            refresh.cancel()
-        await runner.cleanup()
-        await http.close()
-        await webhook_http.close()
-        await bot.close()
+        for task in (stop_waiter, refresh):
+            if task is not None:
+                task.cancel()
+        if runner is not None:
+            await runner.cleanup()
+        for session in (http, webhook_http):
+            if session is not None:
+                await session.close()
+        if bot is not None:
+            await bot.close()
         await db.close()
 
 

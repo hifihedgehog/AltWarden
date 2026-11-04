@@ -32,6 +32,7 @@ class FakePort:
         self.delete_works = True
         self.channel_posts_work = True
         self.extra_roles: list = []
+        self.extra_channels: list = []
         self.profile_problem = None
         self.discord_commands = {"application": "123", "all": [], "commands": [
             {"name": "verify-user", "id": "900000000000000001", "overrides": []},
@@ -60,7 +61,8 @@ class FakePort:
                                 {"id": UNVERIFIED_ROLE, "name": "Unverified", "color": 0, "position": 1, "managed": False, "mentionable": False},
                                 *self.extra_roles],
                          channels=[{"id": CHANNEL, "name": "verify", "type": "text", "category": None, "position": 0},
-                                   {"id": LOG_CHANNEL, "name": "logs", "type": "text", "category": None, "position": 1}],
+                                   {"id": LOG_CHANNEL, "name": "logs", "type": "text", "category": None, "position": 1},
+                                   *self.extra_channels],
                          bot_permissions=frozenset({"manage_roles", "kick_members", "ban_members"}), bot_top_role=5,
                          channel_permissions={CHANNEL: frozenset({"view_channel", "send_messages", "embed_links"}),
                                               LOG_CHANNEL: frozenset({"view_channel", "send_messages", "embed_links"})})
@@ -106,7 +108,7 @@ class FakePort:
         self.dms.append((user_id, notice))
         return self.dm_open
 
-    async def send(self, channel_id, notice):
+    async def send(self, channel_id, notice, *, guild_id=None):
         self.sent.append((channel_id, notice))
         if not self.channel_posts_work:
             return None
@@ -124,7 +126,7 @@ class FakePort:
     async def pin(self, channel_id, message_id):
         return True
 
-    async def open_help_thread(self, channel_id, name, user_id, role_id, notice):
+    async def open_help_thread(self, channel_id, name, user_id, role_id, notice, *, guild_id=None):
         self.calls.append(("open_help_thread", user_id))
         return "970000000000000099"
 

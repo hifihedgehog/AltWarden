@@ -53,7 +53,14 @@ export async function render(view) {
   }
 
   const original = discord ? { all: discord.all, commands: Object.fromEntries(discord.commands.map((row) => [row.id, row.overrides])) } : null;
-  if (discordDraft?.guild !== state.guild.id) discordDraft = original ? { guild: state.guild.id, ...clone(original) } : null;
+  // A draft can't outlive what it was drawn from, or saving it would undo a change made in Discord since.
+  // If Discord is quiet this time, the draft stays for the next visit.
+  const drawnFrom = original ? JSON.stringify(original) : null;
+  if (original && (discordDraft?.guild !== state.guild.id || discordDraft.from !== drawnFrom)) {
+    const edited = discordDraft?.guild === state.guild.id && JSON.stringify({ all: discordDraft.all, commands: discordDraft.commands }) !== discordDraft.from;
+    if (edited) toast("Discord's command permissions changed, so your unsaved changes to them were cleared.", true);
+    discordDraft = { guild: state.guild.id, from: drawnFrom, ...clone(original) };
+  }
 
   function overrideList(overrides, onChange, disabled) {
     const list = h("div", { class: "grid" });
@@ -141,14 +148,14 @@ export async function render(view) {
   }
 
   function discordSection() {
-    if (!discordDraft) return section("Who sees commands in Discord", null, h("div", { class: "notice warn", text: "Discord didn't answer, so its command permissions can't be shown right now." }));
+    if (!original) return section("Who sees commands in Discord", null, h("div", { class: "notice warn", text: "Discord didn't answer, so its command permissions can't be shown right now." }));
     const pending = Object.keys(discordChanges()).length;
     const edit = (title, overrides) => h("button", { class: "button small", text: canEdit ? "Edit" : "View", onclick: () => editDiscord(title, overrides) });
     return section("Who sees commands in Discord",
       "Discord's own command permissions, the same ones as Server Settings, Integrations. A change made there shows here. Saving here asks you to approve it on Discord once, and that approval ends as soon as the change is saved.",
       pending ? h("div", { class: "toolbar" },
         h("span", { class: "muted", text: `${pending} unsaved change${pending === 1 ? "" : "s"} for Discord.` }),
-        h("button", { class: "button small", text: "Discard", onclick: () => { discordDraft = { guild: state.guild.id, ...clone(original) }; draw(); } }),
+        h("button", { class: "button small", text: "Discard", onclick: () => { discordDraft = { guild: state.guild.id, from: drawnFrom, ...clone(original) }; draw(); } }),
         h("button", { class: "button small primary", text: "Save to Discord", onclick: saveToDiscord })) : null,
       h("div", { class: "rule-list" },
         row("discord-all", "All commands", discordSummary(discordDraft.all), edit("All commands", discordDraft.all)),
