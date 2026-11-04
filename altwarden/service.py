@@ -572,13 +572,13 @@ class Service:
         reason_text = f"AltWarden: {notices.check_name(primary.check_id)}"
         done = action  # what really happened, because the page mustn't say someone was removed when they're still here
         if action == KICK and not await self.port.kick(guild_id, user_id, reason_text):
-            took += " (failed: missing permission)"
+            took += " (failed, usually a missing permission)"
             done = DENY
         elif action == BAN:
             if await self.port.ban(guild_id, user_id, reason_text):
                 await self.db.record_ban(guild_id, user_id, by_altwarden=True, keep_days=rules["privacy"]["banned_days"])
             else:
-                took += " (failed: missing permission)"
+                took += " (failed, usually a missing permission)"
                 done = DENY
         took += await self._act_on_link(guild_id, rules, user_id, decision, guild_name)
         modules = [finding.check_id for finding in decision.findings]
@@ -805,7 +805,7 @@ class Service:
             await self.db.update_member(guild_id, user_id, status="pending", verified_at=None)  # or a rejoin would restore the role
         await self.db.add_attempt(guild_id, user_id, "honeypot", action=action, detail={})
         await self._log(guild_id, document, ["honeypot"], notices.staff_log(
-            "Honeypot triggered", f"{'A webhook' if is_webhook else f'<@{user_id}>'} posted in <#{channel_id}>. {took}{'' if done else ' (failed: missing permission)'}."
+            "Honeypot triggered", f"{'A webhook' if is_webhook else f'<@{user_id}>'} posted in <#{channel_id}>. {took}{'' if done else ' (failed, usually a missing permission)'}."
             + ("" if deleted else " The message is still there, because AltWarden needs Manage Messages in that channel."),
             notices.RED))
 
@@ -1085,7 +1085,7 @@ class Service:
         kicked = await self.port.kick(guild_id, user_id, "AltWarden: didn't verify in time")
         await self.db.add_attempt(guild_id, user_id, "auto_kick", action="kick")
         await self._log(guild_id, document, ["auto_kick"], notices.staff_log(
-            "Auto kick", f"<@{user_id}> didn't verify in time." + ("" if kicked else " The kick failed: missing permission."), notices.AMBER))
+            "Auto kick", f"<@{user_id}> didn't verify in time." + ("" if kicked else " The kick failed, usually a missing permission."), notices.AMBER))
 
     async def purge(self) -> dict:
         rows = await self.db.all("SELECT guild_id FROM guilds")

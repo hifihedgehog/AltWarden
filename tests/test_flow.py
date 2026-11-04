@@ -337,7 +337,7 @@ class Outcomes(Base):
         await self.change(vpn={"enabled": True, "action": "kick"})
         await self.verify_through(ip="45.33.32.7")
         last = self.port.sent[-1][1].embeds[0]
-        self.assertIn("failed", last["fields"][1]["value"])
+        self.assertIn("failed, usually a missing permission", last["fields"][1]["value"])
 
     async def test_role_problem_reaches_staff_not_a_false_success(self):
         self.port.role_problem = "AltWarden needs Manage Roles"
