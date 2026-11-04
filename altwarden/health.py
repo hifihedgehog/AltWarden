@@ -1,7 +1,7 @@
 """Finds what would stop verification in a server, and says how to fix it.
 
-The report also works out the smallest permission set the current settings need, so a server
-never has to hand the bot Administrator.
+The report also works out the permissions the current settings need, so a server that unticks
+Administrator on the invite knows what the bot still needs.
 """
 from __future__ import annotations
 
@@ -10,15 +10,17 @@ from .settings import given_roles
 
 # Discord permission bits, from the permissions topic.
 BITS = {
-    "kick_members": 1 << 1, "ban_members": 1 << 2, "administrator": 1 << 3, "manage_channels": 1 << 4, "manage_guild": 1 << 5,
+    "create_instant_invite": 1 << 0, "kick_members": 1 << 1, "ban_members": 1 << 2, "administrator": 1 << 3, "manage_channels": 1 << 4, "manage_guild": 1 << 5,
     "view_channel": 1 << 10, "send_messages": 1 << 11, "manage_messages": 1 << 13, "embed_links": 1 << 14,
-    "read_message_history": 1 << 16, "mention_everyone": 1 << 17, "change_nickname": 1 << 26, "manage_roles": 1 << 28,
+    "read_message_history": 1 << 16, "mention_everyone": 1 << 17, "external_emojis": 1 << 18, "change_nickname": 1 << 26, "manage_roles": 1 << 28,
     "manage_threads": 1 << 34, "create_private_threads": 1 << 36, "send_messages_in_threads": 1 << 38, "moderate_members": 1 << 40,
     "pin_messages": 1 << 51,
 }
-BASE_PERMISSIONS = ("view_channel", "send_messages", "embed_links", "read_message_history", "manage_roles", "kick_members",
-                    "ban_members", "moderate_members", "manage_messages", "manage_threads", "create_private_threads",
-                    "send_messages_in_threads", "change_nickname", "pin_messages")
+# What the invite asks for. If a server unticks Administrator on Discord's screen, the rest still cover every feature.
+BASE_PERMISSIONS = ("administrator", "manage_roles", "manage_channels", "kick_members", "ban_members", "create_instant_invite",
+                    "change_nickname", "view_channel", "moderate_members", "send_messages", "send_messages_in_threads",
+                    "create_private_threads", "manage_messages", "manage_threads", "embed_links", "read_message_history",
+                    "mention_everyone", "external_emojis", "pin_messages")
 
 
 def invite_permissions() -> int:
@@ -150,10 +152,7 @@ def report(guild, settings: dict) -> dict:
         for name in ("create_private_threads", "send_messages_in_threads", "manage_threads", "pin_messages"):
             if name not in held and "administrator" not in held:
                 issues.append({"area": "help_desk", "feature": "help_desk", "title": f"Help desk needs {PERMISSION_LABELS[name]}", "fix": "Allow it for AltWarden in the verification channel."})
-    surplus = "administrator" in guild.bot_permissions
-    return {"healthy": not issues, "issues": issues, "ok": ok, "needs": needs, "has_administrator": surplus,
-            "advice": ("AltWarden has Administrator, which it doesn't need. If its token were ever stolen, the attacker "
-                       "would control the whole server. Remove Administrator and keep only the permissions listed here.") if surplus else None}
+    return {"healthy": not issues, "issues": issues, "ok": ok, "needs": needs, "has_administrator": "administrator" in guild.bot_permissions}
 
 
 def feature_warnings(guild, settings: dict) -> dict[str, list[str]]:

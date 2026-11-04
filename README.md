@@ -41,7 +41,7 @@ The [security page](altwarden/web/static/security.html) lists how that works and
 | Appeals | From the result page, decided with buttons in Discord |
 | Settings changes | Logged with before and after values |
 | Data deletion | Self-service |
-| Needs Administrator | No |
+| Administrator | Asked for by default, and the bot still works if you untick it |
 | Webhooks and API | Signed webhooks, and read-only API keys |
 | Languages for members | English, German, Spanish, French, Japanese, Korean, Portuguese, Russian, Chinese |
 

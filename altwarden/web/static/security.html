@@ -38,7 +38,7 @@
       <li>Request logs are off in the application, its error log names the route and not the address, and the site's access log records no client addresses or page paths.</li>
       <li>The application reads a member's address from the last value the proxy added, because a client can send forged lines ahead of it.</li>
       <li>A server can only choose channels in that server, and a post is refused if a channel turns out to be somewhere else.</li>
-      <li>The bot asks only for the permissions its features use. It doesn't need Administrator.</li>
+      <li>The invite asks for Administrator by default. Untick it on Discord's screen and the bot still works with the other permissions on that list, and the Health page names any it's missing. With Administrator, anyone who stole the bot's token could control the server.</li>
     </ul>
 
     <h2>Known limits</h2>

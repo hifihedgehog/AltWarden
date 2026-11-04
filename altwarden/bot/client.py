@@ -504,8 +504,6 @@ def register_commands(bot: AltWardenBot) -> None:
             text = "Everything AltWarden needs is in place."
         else:
             text = "\n".join(f"**{issue['title']}**\n{issue['fix']}" for issue in data["issues"][:10])
-        if data["advice"]:
-            text += f"\n\n{data['advice']}"
         await interaction.followup.send(embed=discord.Embed(title="Health check", description=text, color=GREEN if data["healthy"] else RED), ephemeral=True)
 
     @tree.command(name="uninstall", description="Delete AltWarden's settings and every record for this server")

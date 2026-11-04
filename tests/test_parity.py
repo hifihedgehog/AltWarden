@@ -1270,6 +1270,14 @@ class PinPermission(unittest.TestCase):
         document.update(change)
         return settings.normalize(document)
 
+    def test_administrator_brings_no_warning(self):
+        guild = self.view()
+        guild.bot_permissions = frozenset({"administrator"})
+        report = health.report(guild, self.document())
+        self.assertTrue(report["has_administrator"])
+        self.assertTrue(report["healthy"], report["issues"])
+        self.assertNotIn("advice", report)
+
     def test_the_honeypot_reports_it_missing(self):
         pot = {"enabled": True, "channel": CHANNEL, "action": "log"}
         titles = json.dumps(health.report(self.view("manage_messages"), self.document(honeypot=pot))["issues"])

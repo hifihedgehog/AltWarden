@@ -192,6 +192,7 @@ PERMISSION_LABELS = {
     "embed_links": "Embed Links", "read_message_history": "Read Message History", "mention_everyone": "Mention All Roles",
     "change_nickname": "Change Nickname", "manage_threads": "Manage Threads", "create_private_threads": "Create Private Threads",
     "send_messages_in_threads": "Send Messages in Threads", "pin_messages": "Pin Messages",
+    "create_instant_invite": "Create Invite", "external_emojis": "Use External Emoji",
 }
 
 ACTION_LABEL = {WATCH: "Watch", DENY: "Deny", KICK: "Kick", BAN: "Ban"}

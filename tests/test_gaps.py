@@ -143,12 +143,15 @@ class Pages(Base):
             self.assertEqual(response.status, 200, path)
             self.assertIn("AltWarden", text, path)
 
-    async def test_invite_asks_for_no_administrator(self):
+    async def test_the_invite_asks_for_administrator_and_what_works_without_it(self):
+        import discord
         response = await self.client.get("/invite", allow_redirects=False)
-        location = response.headers["Location"]
-        permissions = int(location.split("permissions=")[1])
-        self.assertFalse(permissions & (1 << 3))
-        self.assertTrue(permissions & (1 << 28))
+        permissions = discord.Permissions(int(response.headers["Location"].split("permissions=")[1]))
+        names = {name for name, on in permissions if on}
+        self.assertEqual(names, {"administrator", "manage_roles", "manage_channels", "kick_members", "ban_members", "create_instant_invite",
+                                 "change_nickname", "read_messages", "moderate_members", "send_messages", "send_messages_in_threads",
+                                 "create_private_threads", "manage_messages", "manage_threads", "embed_links", "read_message_history",
+                                 "mention_everyone", "external_emojis", "pin_messages"})
 
     async def test_every_failure_links_to_a_help_page_that_exists(self):
         from altwarden.catalog import HELP_SLUG
