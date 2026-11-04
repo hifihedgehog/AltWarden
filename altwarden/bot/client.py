@@ -339,8 +339,12 @@ async def reply(interaction: discord.Interaction, text: str) -> None:
         log.warning("Couldn't answer an interaction: %s", exc)
 
 
+# The right-click commands follow the rule of the slash command they stand in for.
+MENU_RULES = {"Verify": "verify-user", "Reset": "reset-user", "Create Bypass": "create-bypass", "Lookup": "lookup"}
+
+
 async def allowed(bot: AltWardenBot, interaction: discord.Interaction, command: str) -> bool:
-    """Commands show for everyone, and this rule decides who can run them."""
+    """Discord's list only decides who sees a command. This rule decides who can run it."""
     document = await bot.service.get_settings(str(interaction.guild_id)) or settings_module.defaults()
     viewer = viewer_of(bot.gateway.info(interaction.user))
     if access.allowed(settings_module.command_rule(document, command), viewer, str(interaction.channel_id)):
@@ -690,4 +694,10 @@ def register_commands(bot: AltWardenBot) -> None:
             return
         log.exception("Command failed", exc_info=error)
         await reply(interaction, "That command failed. Please try again.")
+
+    # Discord keeps staff commands out of a member's list until the server changes that.
+    for command in tree.get_commands():
+        required = settings_module.COMMAND_DEFAULTS.get(MENU_RULES.get(command.name, command.name))
+        if required:
+            command.default_permissions = discord.Permissions(**dict.fromkeys(required, True))
 

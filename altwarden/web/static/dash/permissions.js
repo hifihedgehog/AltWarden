@@ -173,7 +173,7 @@ export async function render(view) {
           const title = `${PAGE_NAMES[page]}: ${level}`;
           return row(`page-${page}-${level}`, title, summary(rule), edit(title, rule, false));
         })))),
-      section("Who can run commands", "Commands show for everyone in Discord unless Discord's permissions below hide them. These rules decide who can run them, and where.", h("div", { class: "rule-list" },
+      section("Who can run commands", "Discord lists each staff command only for people with the permission it needs, unless Discord's permissions below change that. These rules decide who can run them, and where. To let a role without that permission use a command, allow it in both places.", h("div", { class: "rule-list" },
         Object.entries(current.commands).map(([name, rule]) => row(`command-${name}`, `/${name}`, summary(rule), edit(`/${name}`, rule, true))))),
       discordSection());
   }

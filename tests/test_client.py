@@ -84,6 +84,34 @@ class Client(Base):
         await self.db.run("UPDATE guilds SET setup_done = 0")
 
 
+class CommandList(Client):
+    """What's sent to Discord decides who sees a command in its list."""
+
+    def sent(self):
+        return {command.name: command.to_dict(self.bot.tree) for command in self.bot.tree.get_commands()}
+
+    async def test_staff_commands_ask_for_the_permission_their_rule_needs(self):
+        manage_guild, manage_roles = 1 << 5, 1 << 28
+        sent = self.sent()
+        for name in ("verify-user", "reset-user", "create-bypass", "trust-accounts", "lookup", "Verify", "Reset", "Create Bypass", "Lookup"):
+            self.assertEqual(sent[name]["default_member_permissions"], manage_roles, name)
+        for name in ("setup", "settings", "post-message", "health", "uninstall", "raid"):
+            self.assertEqual(sent[name]["default_member_permissions"], manage_guild, name)
+        self.assertEqual(sent["import-members"]["default_member_permissions"], manage_guild | manage_roles)
+
+    async def test_member_commands_stay_listed_for_everyone(self):
+        sent = self.sent()
+        for name in ("help", "ping", "my-data"):
+            self.assertIsNone(sent[name]["default_member_permissions"], name)
+
+    async def test_no_staff_command_is_missed(self):
+        """A renamed command or rule would otherwise stay in every member's list without anyone noticing."""
+        sent = self.sent()
+        self.assertEqual(len(sent), 19)
+        listed_for_all = {name for name, body in sent.items() if body["default_member_permissions"] is None}
+        self.assertEqual(listed_for_all, {"help", "ping", "my-data"})
+
+
 class SetupCommand(Client):
     async def run(self, interaction, role=None):
         role = role or Rank(2)
