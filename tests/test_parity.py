@@ -365,6 +365,16 @@ class ServerStates(Helpers):
 
 
 class Presets(unittest.TestCase):
+    def test_new_servers_start_with_these_three_on_and_only_recording(self):
+        document = settings.defaults()
+        for check_id in ("mfa", "privacy", "rooted"):
+            check = document["checks"][check_id]
+            self.assertEqual((check["enabled"], check["action"]), (True, "watch"), check_id)
+        self.assertEqual(settings.detect_preset(document), "standard")
+
+    def test_new_servers_ask_rejoining_members_to_verify(self):
+        self.assertFalse(settings.defaults()["core"]["remember_rejoin"])
+
     def test_a_preset_leaves_two_factor_alone(self):
         document = settings.defaults()
         document["checks"]["mfa"].update(enabled=True, action="kick")

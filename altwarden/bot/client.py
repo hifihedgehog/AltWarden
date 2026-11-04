@@ -622,7 +622,7 @@ def register_commands(bot: AltWardenBot) -> None:
         # Over REST, because discord.py doesn't notice when Discord rate limits a gateway request for the list, and would wait forever.
         members = [str(member.id) async for member in guild.fetch_members(limit=None) if not member.bot and (role.is_default() or member.get_role(role.id) is not None)]
         count = await bot.service.import_members(str(guild.id), members, str(interaction.user.id), interaction.user.name)
-        await interaction.followup.send(f"Marked {count} members as verified. They won't be asked to verify.", ephemeral=True)
+        await interaction.followup.send(f"Marked {count} members as verified. They won't be asked to verify while they stay in the server.", ephemeral=True)
 
     @tree.command(name="raid", description="Turn raid mode on or off")
     @app_commands.guild_only()

@@ -9,6 +9,8 @@ export async function render(view) {
     for (const item of data.ok) (groups[item.area] ??= []).push(item);
     fill(body,
       h("div", { class: `notice ${data.healthy ? "" : "bad"}`, text: data.healthy ? "Everything AltWarden needs is in place." : `${data.issues.length} things need fixing.` }),
+      data.public_bot ? h("div", { class: "notice bad", text: "Public Bot is on in the Discord Developer Portal, so anyone can add this bot to their server. Turn it off there." }) : null,
+      data.vpn_lookup_idle ? h("div", { class: "notice warn", text: "Outside VPN lookup is on, but this copy of AltWarden has no proxycheck.io key, so it isn't running." }) : null,
       data.lists_loaded ? null : h("div", { class: "notice warn", text: "The network lists haven't loaded yet, so VPN and country checks can't run." }),
       data.lists_loaded && data.lists_missing.length ? h("div", { class: "notice warn", text: `${data.lists_missing.length} network lists haven't downloaded yet, so VPN and country checks may miss some connections. AltWarden tries again every hour.` }) : null,
       data.issues.length ? section("To fix", null, h("div", { class: "rule-list" }, data.issues.map((issue) => h("div", { class: "rule" },

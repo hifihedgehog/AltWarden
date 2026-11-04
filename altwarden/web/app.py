@@ -553,11 +553,6 @@ async def me_appeal(request: web.Request) -> web.Response:
     return json_error(400, problem) if problem else web.json_response({"ok": True})
 
 
-async def invite(request: web.Request) -> web.Response:
-    from ..health import invite_url
-    raise web.HTTPFound(invite_url(request.app["oauth"].client_id))
-
-
 async def healthz(request: web.Request) -> web.Response:
     service: Service = request.app["service"]
     return web.json_response({"ok": True, "version": __version__, "lists_loaded": service.net.ready})
@@ -595,7 +590,6 @@ def build_app(service: Service, keys: Keyring, oauth: DiscordOAuth, *, trust_pro
     add("/dashboard/callback", login_callback)
     add("/dashboard/{tail:.*}", page("dashboard.html", DASHBOARD_CSP))
     add("/login", login)
-    add("/invite", invite)
     add("/healthz", healthz)
     add("/.well-known/security.txt", security_txt)
     add("/api/verify/{token}", verify_state)

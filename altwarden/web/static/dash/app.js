@@ -88,11 +88,9 @@ function lookButton() {
 }
 
 function serverMenu(current) {
-  const reachable = state.session.guilds;
-  const list = h("div", { class: "nav" }, reachable.map((guild) => h("a", {
-    href: guild.reachable ? `/dashboard/${guild.id}` : state.session.invite + `&guild_id=${guild.id}&disable_guild_select=true`,
-  }, h("img", { class: "server-icon", src: iconUrl(guild.id, guild.icon), alt: "" }),
-  h("span", { text: guild.name }), guild.reachable ? null : h("small", { class: "faint", text: "Add" }))));
+  const list = h("div", { class: "nav" }, state.session.guilds.map((guild) => h("a", { href: `/dashboard/${guild.id}` },
+    h("img", { class: "server-icon", src: iconUrl(guild.id, guild.icon), alt: "" }),
+    h("span", { text: guild.name }))));
   list.hidden = true;
   const button = h("button", { class: "server-button", "aria-expanded": "false", onclick: () => {
     list.hidden = !list.hidden;
@@ -155,7 +153,7 @@ function searchEntries() {
     for (const name of state.catalog.commands) entries.push({ label: `/${name}`, kind: "Permission", go: `/dashboard/${state.guild.id}/permissions#command-${name}` });
     for (const page of PAGES) entries.push({ label: `Who can open ${page.label}`, kind: "Permission", go: `/dashboard/${state.guild.id}/permissions#page-${page.id}-view` });
   }
-  for (const guild of state.session.guilds) if (guild.reachable) entries.push({ label: guild.name, kind: "Server", go: `/dashboard/${guild.id}` });
+  for (const guild of state.session.guilds) entries.push({ label: guild.name, kind: "Server", go: `/dashboard/${guild.id}` });
   return entries;
 }
 
@@ -217,14 +215,12 @@ function showServers() {
   const view = shell(null, "Your servers");
   const guilds = state.session.guilds;
   if (!guilds.length) {
-    view.append(h("p", { class: "muted", text: "You don't manage any servers. You need Manage Server to add AltWarden." }));
+    view.append(h("p", { class: "muted", text: "AltWarden isn't running on any server you have access to." }));
     return;
   }
   view.append(h("div", { class: "grid two" }, guilds.map((guild) => h("div", { class: "panel" },
     h("div", { class: "who" }, h("img", { src: iconUrl(guild.id, guild.icon), alt: "" }), h("strong", { text: guild.name })),
-    h("div", { class: "toolbar" }), guild.reachable
-      ? h("a", { class: "button primary small", href: `/dashboard/${guild.id}`, text: "Open" })
-      : h("a", { class: "button small", href: `${state.session.invite}&guild_id=${guild.id}&disable_guild_select=true`, text: "Add AltWarden" })))));
+    h("div", { class: "toolbar" }), h("a", { class: "button primary small", href: `/dashboard/${guild.id}`, text: "Open" })))));
 }
 
 async function route() {

@@ -1,7 +1,7 @@
 """Finds what would stop verification in a server, and says how to fix it.
 
 The report also works out the permissions the current settings need, so a server that unticks
-Administrator on the invite knows what the bot still needs.
+Administrator on the add link knows what the bot still needs.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ BITS = {
     "manage_threads": 1 << 34, "create_private_threads": 1 << 36, "send_messages_in_threads": 1 << 38, "moderate_members": 1 << 40,
     "pin_messages": 1 << 51,
 }
-# What the invite asks for. If a server unticks Administrator on Discord's screen, the rest still cover every feature.
+# What the add link asks for. If a server unticks Administrator on Discord's screen, the rest still cover every feature.
 BASE_PERMISSIONS = ("administrator", "manage_roles", "manage_channels", "kick_members", "ban_members", "create_instant_invite",
                     "change_nickname", "view_channel", "moderate_members", "send_messages", "send_messages_in_threads",
                     "create_private_threads", "manage_messages", "manage_threads", "embed_links", "read_message_history",

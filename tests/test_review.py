@@ -385,6 +385,9 @@ class StaffAndLinks(Base):
 
 class RoleFailures(Base):
     async def test_a_rejoin_that_cant_get_the_role_isnt_recorded_as_done(self):
+        document = await self.service.get_settings(GUILD)
+        document["core"]["remember_rejoin"] = True
+        await self.service.save_settings(GUILD, document)
         await self.verify_through()
         self.port.role_problem = "That role no longer exists."
         await self.service.on_join(self.port.add_member(OLD_USER))

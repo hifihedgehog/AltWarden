@@ -123,10 +123,10 @@ PRESETS: dict[str, dict] = {
             "fake_ua": (True, WATCH, {}),
             "devtools": (True, DENY, {}),  # closing the panel fixes it, and a script driving the browser looks the same
             "incognito": (True, WATCH, {}),
-            "privacy": (False, WATCH, {}),
+            "privacy": (True, WATCH, {}),
             "threat": (True, DENY, {"bot_score": 80, "suspect_score": 70}),
             "vm": (True, WATCH, {}),
-            "rooted": (False, WATCH, {}),
+            "rooted": (True, WATCH, {}),
         },
     },
     "strict": {

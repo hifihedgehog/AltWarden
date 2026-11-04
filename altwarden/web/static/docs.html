@@ -15,13 +15,13 @@
 
     <h2>Set it up</h2>
     <ol>
-      <li><a href="/invite">Add AltWarden to your server.</a> The invite asks for Administrator by default. If you untick it, Health names the permissions AltWarden needs for the features you use.</li>
+      <li>Add AltWarden to your server with the link it writes to its log when it starts. Only the owner of the Discord app can use that link while Public Bot is off in the Discord Developer Portal, and it should stay off. The link asks for Administrator by default. If you untick it, Health names the permissions AltWarden needs for the features you use.</li>
       <li>In Server Settings, Roles, drag AltWarden's role above the role it will give out. Administrator doesn't change this, because Discord only lets a bot give roles below its own highest role.</li>
       <li>Run <code>/setup</code>, or open the <a href="/dashboard">dashboard</a>, and pick a verified role and a verification channel. Unless you're an Administrator, the role has to sit below your own highest role.</li>
       <li>Lock your channels so only the verified role can see them, and leave the verification channel visible.</li>
       <li>Open Health on the dashboard, or run <code>/health</code>, to catch anything missing.</li>
     </ol>
-    <p>Switching from another bot? Run <code>/import-members</code> with your existing verified role, and those members won't be asked to verify.</p>
+    <p>Switching from another bot? Run <code>/import-members</code> with your existing verified role, and those members won't be asked to verify while they stay in the server.</p>
 
     <h2>Lock down your server</h2>
     <p>Set the verification channel so new members can read it but can't chat in it.</p>

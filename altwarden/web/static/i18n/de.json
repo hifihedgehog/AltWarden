@@ -168,7 +168,7 @@
   "Staff: finish the setup screen on the dashboard, or run /setup.": "Team: Schließe den Einrichtungsbildschirm im Dashboard ab oder führe /setup aus.",
   "AltWarden isn't in this server any more": "AltWarden ist nicht mehr auf diesem Server",
   "AltWarden has to be in the server to give you the role. There's nothing you can fix on your side.": "AltWarden muss auf dem Server sein, um dir die Rolle zu geben. Du kannst das nicht selbst beheben.",
-  "Staff: add AltWarden back from the dashboard. Your settings are kept.": "Team: Füge AltWarden über das Dashboard wieder hinzu. Die Einstellungen bleiben erhalten.",
+  "Staff: add AltWarden back to the server. Your settings are kept.": "Team: Füge AltWarden wieder zum Server hinzu. Die Einstellungen bleiben erhalten.",
   "Discord is still loading this server": "Discord lädt diesen Server noch",
   "Discord can take a few minutes to make a server available again, usually after an outage.": "Es kann ein paar Minuten dauern, bis Discord einen Server wieder verfügbar macht, meist nach einem Ausfall.",
   "Wait a few minutes, then press Try again.": "Warte ein paar Minuten und drücke dann auf „Noch mal versuchen“.",

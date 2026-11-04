@@ -264,7 +264,7 @@ export async function render(view) {
         switchRow("reason", "Tell members why", "Show which check stopped them. Turn this off to give evaders less to work with.", core.show_reason, (value) => edit(() => { core.show_reason = value; })),
         switchRow("failopen", "Let members through if network data is missing", "When off, verification waits until the lists load.", core.fail_open, (value) => edit(() => { core.fail_open = value; })),
         switchRow("direct", "Skip the start page", "Send members straight to Discord's sign-in instead of showing the page that explains it first.", core.direct_signin, (value) => edit(() => { core.direct_signin = value; })),
-        switchRow("external", "Outside VPN lookup", "Also ask proxycheck.io about each address. This sends members' addresses to that service, so it is off by default.", core.external_vpn_lookup, (value) => edit(() => { core.external_vpn_lookup = value; })))),
+        switchRow("external", "Outside VPN lookup", "Also ask proxycheck.io about each address. This sends members' addresses to that service, so it is off by default. It only runs if the server hosting AltWarden has a proxycheck.io key.", core.external_vpn_lookup, (value) => edit(() => { core.external_vpn_lookup = value; })))),
 
       groups.map(([group, info]) => {
         const rows = state.catalog.checks.filter((item) => item.group === group);

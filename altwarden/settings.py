@@ -209,7 +209,7 @@ def defaults() -> dict:
             "notify_closed_dms": {"enabled": True, "seconds": 30},
             "auto_kick": {"enabled": False, "minutes": 10},
             "cooldown": {"enabled": False, "seconds": 60},
-            "remember_rejoin": True,
+            "remember_rejoin": False,
             "fail_open": True,
             "show_reason": True,
             "external_vpn_lookup": False,
@@ -230,6 +230,7 @@ def defaults() -> dict:
         "appearance": {"nickname": "", "bio": "", "avatar": "", "font": None, "effect": None, "colors": []},
         "permissions": {"pages": {}, "commands": {}},
     }
+    settings["checks"]["mfa"]["enabled"] = True  # no preset touches this one, so it starts on here
     return apply_preset(settings, DEFAULT_PRESET)
 
 

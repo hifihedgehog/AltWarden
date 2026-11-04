@@ -53,6 +53,7 @@ def load_zone_countries() -> dict:
 
 async def run(args: argparse.Namespace) -> None:
     from .bot.client import AltWardenBot
+    from .health import invite_url
 
     data_dir = Path(args.data).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -74,9 +75,13 @@ async def run(args: argparse.Namespace) -> None:
         token = os.environ["DISCORD_TOKEN"]
         await bot.login(token)
         application = await bot.application_info()
+        log.info("Link to add this bot to a server: %s", invite_url(str(application.id)))
+        if application.bot_public:
+            log.warning("Public Bot is on in the Discord Developer Portal, so anyone can add this bot to their server.")
         oauth = DiscordOAuth(http, str(application.id), os.environ["DISCORD_CLIENT_SECRET"])
         app = build_app(service, keys, oauth, trust_proxy=True)
         app["http"] = http
+        app["public_bot"] = application.bot_public
         webhook_http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicResolver()))
         app["webhook_http"] = webhook_http
         app["post_message"] = bot.post_message

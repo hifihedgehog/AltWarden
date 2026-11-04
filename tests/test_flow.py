@@ -477,7 +477,28 @@ class StaffTools(Base):
         await fresh.tick()
         self.assertFalse(self.port.did("kick"))
 
-    async def test_rejoin_is_remembered(self):
+    async def test_a_verified_member_who_rejoins_verifies_again(self):
+        await self.verify_through()
+        self.port.calls.clear()
+        self.port.dms.clear()
+        await self.service.on_join(self.port.add_member(OLD_USER))
+        self.assertNotIn(("add_role", OLD_USER, VERIFIED_ROLE), self.port.calls)
+        record = await self.db.member(GUILD, OLD_USER)
+        self.assertEqual(record["status"], "pending")
+        self.assertTrue(self.port.dms, "they get a new link, like any new member")
+        self.assertIsNotNone(record["first_verified_at"], "they still count as the account that verified first")
+
+    async def test_an_imported_member_who_rejoins_verifies_again(self):
+        await self.service.import_members(GUILD, [OTHER_USER], STAFF, "staff")
+        self.port.calls.clear()
+        await self.service.on_join(self.port.add_member(OTHER_USER))
+        self.assertNotIn(("add_role", OTHER_USER, VERIFIED_ROLE), self.port.calls)
+        self.assertEqual((await self.db.member(GUILD, OTHER_USER))["status"], "pending")
+
+    async def test_rejoin_is_remembered_when_a_server_turns_that_on(self):
+        document = await self.service.get_settings(GUILD)
+        document["core"]["remember_rejoin"] = True
+        await self.service.save_settings(GUILD, document)
         await self.verify_through()
         self.port.calls.clear()
         self.port.dms.clear()
@@ -714,6 +735,31 @@ class Dashboard(Base):
     async def test_session_lists_the_server(self):
         data = await self.log_in()
         self.assertEqual(data["guilds"][0]["id"], GUILD)
+
+    async def test_a_server_without_the_bot_isnt_offered(self):
+        await self.log_in()
+        self.discord.guilds = [{"id": GUILD, "name": "Test Server", "icon": None, "owner": True, "permissions": "32"},
+                               {"id": "999999999999999999", "name": "Someone Else", "icon": None, "owner": True, "permissions": "8"}]
+        data = await self.log_in()
+        self.assertEqual([guild["id"] for guild in data["guilds"]], [GUILD])
+        self.assertNotIn("invite", data)
+
+    async def test_health_warns_when_the_app_is_public(self):
+        await self.log_in()
+        url = f"/api/guilds/{GUILD}/health"
+        self.assertFalse((await (await self.client.get(url, headers=self.session_cookie)).json())["public_bot"])
+        self.client.app["public_bot"] = True
+        self.assertTrue((await (await self.client.get(url, headers=self.session_cookie)).json())["public_bot"])
+
+    async def test_health_says_when_the_outside_lookup_cant_run(self):
+        await self.log_in()
+        document = await self.service.get_settings(GUILD)
+        document["core"]["external_vpn_lookup"] = True
+        await self.service.save_settings(GUILD, document)
+        url = f"/api/guilds/{GUILD}/health"
+        self.assertTrue((await (await self.client.get(url, headers=self.session_cookie)).json())["vpn_lookup_idle"])
+        self.service.proxycheck = lambda ip: None
+        self.assertFalse((await (await self.client.get(url, headers=self.session_cookie)).json())["vpn_lookup_idle"])
 
     async def test_save_settings_writes_the_audit_log(self):
         await self.log_in()

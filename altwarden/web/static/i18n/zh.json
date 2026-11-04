@@ -168,7 +168,7 @@
   "Staff: finish the setup screen on the dashboard, or run /setup.": "管理员：请在控制面板上完成设置页面，或运行 /setup。",
   "AltWarden isn't in this server any more": "AltWarden 已不在此服务器中",
   "AltWarden has to be in the server to give you the role. There's nothing you can fix on your side.": "AltWarden 必须在服务器中才能授予你身份组。你这边无法解决这个问题。",
-  "Staff: add AltWarden back from the dashboard. Your settings are kept.": "管理员：请从控制面板重新添加 AltWarden。你的设置会保留。",
+  "Staff: add AltWarden back to the server. Your settings are kept.": "管理员：请把 AltWarden 重新添加到服务器。你的设置会保留。",
   "Discord is still loading this server": "Discord 仍在加载此服务器",
   "Discord can take a few minutes to make a server available again, usually after an outage.": "Discord 可能需要几分钟才能让服务器恢复可用，通常发生在故障之后。",
   "Wait a few minutes, then press Try again.": "等几分钟，然后点击“重试”。",

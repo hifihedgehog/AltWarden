@@ -42,6 +42,7 @@ The [security page](altwarden/web/static/security.html) lists how that works and
 | Settings changes | Logged with before and after values |
 | Data deletion | Self-service |
 | Administrator | Asked for by default, and the bot still works if you untick it |
+| Who can add it | Only you, while Public Bot is off |
 | Webhooks and API | Signed webhooks, and read-only API keys |
 | Languages for members | English, German, Spanish, French, Japanese, Korean, Portuguese, Russian, Chinese |
 
@@ -68,7 +69,7 @@ Discord doesn't publish the name style fields in its reference. They come from [
 
 You need Python 3.11 or newer and a reverse proxy with HTTPS.
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Turn on **Server Members Intent**, and leave Presence and Message Content off. Add these OAuth2 redirects, with your own address:
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Turn on **Server Members Intent**, and leave Presence and Message Content off. Turn off **Public Bot**, so only you can add it to a server. Add these OAuth2 redirects, with your own address:
    ```
    https://your.site/verify/callback
    https://your.site/dashboard/callback
@@ -88,7 +89,7 @@ You need Python 3.11 or newer and a reverse proxy with HTTPS.
    ```sh
    python -m altwarden --public-url https://your.site --port 8892
    ```
-   It listens on `127.0.0.1` and downloads its network lists on the first run. `altwarden.service` is a hardened systemd unit.
+   It listens on `127.0.0.1` and downloads its network lists on the first run. Its log has the link for adding the bot to your server. `altwarden.service` is a hardened systemd unit.
 4. Point your proxy at that port, have it add the client address as the last value of `X-Forwarded-For`, which is the only value AltWarden reads, and **turn off the proxy's access log or remove the client address from it**. Otherwise raw addresses end up in your web logs.
 
 Run the tests with `python -m unittest discover -s tests`. `python scripts/browser_check.py` drives the real pages in headless Edge or Chrome, and changes every control on the Rules, Messages and Access pages to prove it saves. `python scripts/detector_controls.py` and `python scripts/engine_controls.py` run the browser checks on real Chromium, Firefox and WebKit, clean and with what each check should catch.

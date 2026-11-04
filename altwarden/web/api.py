@@ -25,7 +25,7 @@ from ..crypto import new_token, token_hash
 from ..engine import bypass_options
 from ..ports import DiscordUnavailable, MemberInfo
 from ..service import Service
-from .app import ADMINISTRATOR, FLOW_COOKIE, FLOW_SECONDS, MANAGE_GUILD, SNOWFLAKE, STATIC, client_ip, csrf_ok, current_session, json_error, read_json, set_cookie
+from .app import FLOW_COOKIE, FLOW_SECONDS, SNOWFLAKE, STATIC, client_ip, csrf_ok, current_session, json_error, read_json, set_cookie
 
 log = logging.getLogger("altwarden.api")
 
@@ -146,25 +146,22 @@ async def me(request: web.Request) -> web.Response:
     service: Service = request.app["service"]
     servers = []
     for guild in session["guilds"]:
-        present = await service.port.guild(guild["id"]) is not None
-        bits = int(guild["permissions"] or 0)
-        can_invite = guild["owner"] or bool(bits & (ADMINISTRATOR | MANAGE_GUILD))
-        reachable = False
-        if present:
-            try:
-                viewer = await _viewer(service, session, guild["id"])
-            except DiscordUnavailable:
-                reachable = True  # one server's bad moment mustn't cost the whole list, and its own page says what's wrong
-            else:
-                if viewer is not None:
-                    document = await service.get_settings(guild["id"]) or settings_module.defaults()
-                    reachable = any(entry["view"] for entry in _pages_for(document, viewer).values())
-        if reachable or can_invite:
-            servers.append({"id": guild["id"], "name": guild["name"], "icon": guild["icon"], "present": present, "reachable": reachable})
-    servers.sort(key=lambda item: (not item["present"], item["name"].lower()))
-    client_id = request.app["oauth"].client_id
+        if await service.port.guild(guild["id"]) is None:
+            continue  # the bot only runs where its owner put it, so nothing here offers to add it
+        try:
+            viewer = await _viewer(service, session, guild["id"])
+        except DiscordUnavailable:
+            reachable = True  # one server's bad moment mustn't cost the whole list, and its own page says what's wrong
+        else:
+            reachable = False
+            if viewer is not None:
+                document = await service.get_settings(guild["id"]) or settings_module.defaults()
+                reachable = any(entry["view"] for entry in _pages_for(document, viewer).values())
+        if reachable:
+            servers.append({"id": guild["id"], "name": guild["name"], "icon": guild["icon"]})
+    servers.sort(key=lambda item: item["name"].lower())
     return web.json_response({"user": {"id": session["user_id"], "name": session["username"], "avatar": session["avatar"]},
-                              "csrf": session["csrf"], "guilds": servers, "invite": health.invite_url(client_id)})
+                              "csrf": session["csrf"], "guilds": servers})
 
 
 async def catalog_view(request: web.Request) -> web.Response:
@@ -476,6 +473,8 @@ async def health_view(request: web.Request) -> web.Response:
     data = health.report(guild, guarded[1])
     data["lists_loaded"] = service.net.ready
     data["lists_missing"] = service.net.missing()
+    data["public_bot"] = bool(request.app.get("public_bot"))
+    data["vpn_lookup_idle"] = guarded[1]["core"]["external_vpn_lookup"] and service.proxycheck is None
     data["checked_at"] = time.time()
     return web.json_response(data)
 

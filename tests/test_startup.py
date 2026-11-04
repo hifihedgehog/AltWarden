@@ -27,6 +27,8 @@ class StubBot:
 
     made = None
 
+    public = False
+
     def __init__(self):
         StubBot.made = self
         self.gateway = FakePort()
@@ -41,7 +43,7 @@ class StubBot:
 
     async def application_info(self):
         self.calls.append("application_info")
-        return SimpleNamespace(id=123)
+        return SimpleNamespace(id=123, bot_public=self.public)
 
     async def connect(self, reconnect=True):
         self.calls.append("connect")
@@ -94,6 +96,16 @@ class Startup(unittest.IsolatedAsyncioTestCase):
         bot.finish.set()
         await asyncio.wait_for(task, 10)
         self.assertEqual(bot.calls[-1], "close")
+
+    async def test_the_log_has_the_add_link_and_warns_if_the_app_is_public(self):
+        with patch.object(StubBot, "public", True), self.assertLogs("altwarden", "INFO") as logs:
+            task = asyncio.ensure_future(entry.run(self.args))
+            await self.wait_until_serving()
+            StubBot.made.finish.set()
+            await asyncio.wait_for(task, 10)
+        text = " ".join(logs.output)
+        self.assertIn("client_id=123", text)
+        self.assertIn("Public Bot is on", text)
 
     async def test_a_gateway_failure_ends_the_process_after_cleaning_up(self):
         task = asyncio.ensure_future(entry.run(self.args))

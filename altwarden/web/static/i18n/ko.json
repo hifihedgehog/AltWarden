@@ -168,7 +168,7 @@
   "Staff: finish the setup screen on the dashboard, or run /setup.": "운영진: 대시보드에서 설정 화면을 마치거나 /setup을 실행해 주세요.",
   "AltWarden isn't in this server any more": "AltWarden이 더 이상 이 서버에 없어요",
   "AltWarden has to be in the server to give you the role. There's nothing you can fix on your side.": "역할을 부여하려면 AltWarden이 서버에 있어야 해요. 내 쪽에서 해결할 수 있는 건 없어요.",
-  "Staff: add AltWarden back from the dashboard. Your settings are kept.": "운영진: 대시보드에서 AltWarden을 다시 추가해 주세요. 설정은 그대로 유지돼요.",
+  "Staff: add AltWarden back to the server. Your settings are kept.": "운영진: AltWarden을 서버에 다시 추가해 주세요. 설정은 그대로 유지돼요.",
   "Discord is still loading this server": "Discord에서 아직 이 서버를 불러오는 중이에요",
   "Discord can take a few minutes to make a server available again, usually after an outage.": "Discord에서 서버를 다시 사용할 수 있게 되기까지 몇 분 걸릴 수 있어요. 보통 장애가 있었던 뒤에 이런 일이 생겨요.",
   "Wait a few minutes, then press Try again.": "몇 분 기다린 뒤 '다시 시도하기'를 눌러 주세요.",

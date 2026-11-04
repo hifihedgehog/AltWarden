@@ -143,10 +143,18 @@ class Pages(Base):
             self.assertEqual(response.status, 200, path)
             self.assertIn("AltWarden", text, path)
 
-    async def test_the_invite_asks_for_administrator_and_what_works_without_it(self):
-        import discord
+    async def test_nothing_offers_to_add_the_bot(self):
         response = await self.client.get("/invite", allow_redirects=False)
-        permissions = discord.Permissions(int(response.headers["Location"].split("permissions=")[1]))
+        self.assertEqual(response.status, 404)
+        for path in ("/", "/docs", "/security"):
+            text = await (await self.client.get(path)).text()
+            self.assertNotIn('href="/invite"', text, path)
+            self.assertNotIn("Add to Discord", text, path)
+
+    async def test_the_add_link_asks_for_administrator_and_what_works_without_it(self):
+        import discord
+        from altwarden import health
+        permissions = discord.Permissions(int(health.invite_url("1").split("permissions=")[1]))
         names = {name for name, on in permissions if on}
         self.assertEqual(names, {"administrator", "manage_roles", "manage_channels", "kick_members", "ban_members", "create_instant_invite",
                                  "change_nickname", "read_messages", "moderate_members", "send_messages", "send_messages_in_threads",
