@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Docs | AltWarden</title>
+  <link rel="icon" href="/static/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/base.css">
+</head>
+<body>
+  <header class="site-header"><a class="brand" href="/"><img src="/static/img/logo.svg" alt="">AltWarden</a>
+    <nav class="site-nav"><a href="/help">Member help</a><a class="button small primary" href="/dashboard">Dashboard</a></nav></header>
+  <main class="prose">
+    <h1>Docs</h1>
+
+    <h2>Set it up</h2>
+    <ol>
+      <li><a href="/invite">Add AltWarden to your server.</a> The invite asks only for the permissions its features use.</li>
+      <li>In Server Settings, Roles, drag AltWarden's role above the role it will give out.</li>
+      <li>Run <code>/setup</code>, or open the <a href="/dashboard">dashboard</a>, and pick a verified role and a verification channel. Unless you're an Administrator, the role has to sit below your own highest role.</li>
+      <li>Lock your channels so only the verified role can see them, and leave the verification channel visible.</li>
+      <li>Open Health on the dashboard, or run <code>/health</code>, to catch anything missing.</li>
+    </ol>
+    <p>Switching from another bot? Run <code>/import-members</code> with your existing verified role, and those members won't be asked to verify.</p>
+
+    <h2>Lock down your server</h2>
+    <p>Set the verification channel so new members can read it but can't chat in it.</p>
+    <table>
+      <tr><th>Permission in the channel</th><th>@everyone</th><th>AltWarden</th></tr>
+      <tr><td>View Channel</td><td>Allow</td><td>Allow</td></tr>
+      <tr><td>Read Message History</td><td>Allow</td><td>Allow</td></tr>
+      <tr><td>Send Messages</td><td>Deny</td><td>Allow</td></tr>
+      <tr><td>Embed Links</td><td></td><td>Allow</td></tr>
+    </table>
+    <p>Then choose one of two ways to keep new members out of everything else.</p>
+    <ul>
+      <li><strong>Unlock with the verified role.</strong> On each channel or category, deny View Channel for @everyone and allow it for the verified role. Keep the verification channel visible to @everyone.</li>
+      <li><strong>Restrict with an unverified role.</strong> Turn on the unverified role in Rules. On each channel or category, deny View Channel for that role, and allow it in the verification channel. This keeps your current permissions, but members who joined earlier won't have the role.</li>
+    </ul>
+
+    <h2>Verification modes</h2>
+    <table>
+      <tr><th>Mode</th><th>What the member does</th><th>Checks that run</th></tr>
+      <tr><td>Web page</td><td>Opens a private link and signs in with Discord</td><td>All of them</td></tr>
+      <tr><td>Button</td><td>Presses Verify in the channel</td><td>Account age, profile picture, attempt limit, cooldown</td></tr>
+      <tr><td>Instant</td><td>Nothing</td><td>Account age, profile picture, attempt limit, cooldown</td></tr>
+    </table>
+
+    <h2>Actions</h2>
+    <table>
+      <tr><th>Action</th><th>What happens</th></tr>
+      <tr><td>Watch</td><td>The match is recorded and the member gets in. Use this to learn what a rule would catch.</td></tr>
+      <tr><td>Deny</td><td>The member isn't verified and can try again.</td></tr>
+      <tr><td>Kick</td><td>The member is told why, then kicked.</td></tr>
+      <tr><td>Ban</td><td>The member is told why, then banned.</td></tr>
+    </table>
+    <p>Every enabled check runs on every attempt, and the strongest action wins. A failure set to Deny can't hide a match set to Ban.</p>
+
+    <h2>Rules</h2>
+    <p>Every rule is optional. Rules that can't run in the current mode stay saved, and the Rules page marks them as paused.</p>
+    <table>
+      <tr><th>Rule</th><th>What it catches</th><th>Runs in</th></tr>
+      <tr><td>Attempt limit</td><td>Too many failed tries. Attempts can come back after 5 minutes to 30 days, and members are told when.</td><td>Every mode</td></tr>
+      <tr><td>Account age</td><td>Accounts younger than a set age, up to 10 years. Members are told when they'll be old enough.</td><td>Every mode</td></tr>
+      <tr><td>Profile picture</td><td>Accounts with no picture.</td><td>Every mode</td></tr>
+      <tr><td>Cooldown</td><td>Retries too soon after a failure. A wait isn't a failure, so it isn't logged.</td><td>Every mode</td></tr>
+      <tr><td>Two-factor login</td><td>Accounts without two-factor login.</td><td>Web page</td></tr>
+      <tr><td>Throwaway email</td><td>Accounts on a temporary inbox. Only the domain is checked, and major providers always pass.</td><td>Web page</td></tr>
+      <tr><td>Alt accounts</td><td>A second account of someone who verified here, even one who left or was banned.</td><td>Web page</td></tr>
+      <tr><td>VPN and proxy</td><td>VPNs, proxies, Tor, data centers and iCloud Private Relay.</td><td>Web page</td></tr>
+      <tr><td>Mobile data</td><td>Carrier networks.</td><td>Web page</td></tr>
+      <tr><td>Country rules</td><td>A block list or an allow list, with an action per continent, region or country. Logs never show a member's country.</td><td>Web page</td></tr>
+      <tr><td>Automated browser</td><td>Browsers driven by Selenium, Puppeteer and similar tools.</td><td>Web page</td></tr>
+      <tr><td>Anti-detect browser</td><td>Browsers that invent a new device for every profile.</td><td>Web page</td></tr>
+      <tr><td>Browser tampering</td><td>Rewritten built-in functions, scored from 1 to 100.</td><td>Web page</td></tr>
+      <tr><td>Fake browser identity</td><td>A browser claiming to be a different browser or system.</td><td>Web page</td></tr>
+      <tr><td>Developer tools</td><td>Developer tools open during the check.</td><td>Web page</td></tr>
+      <tr><td>Private window</td><td>Private and incognito windows.</td><td>Web page</td></tr>
+      <tr><td>Fingerprint blocking</td><td>Browsers that randomize or hide device details.</td><td>Web page</td></tr>
+      <tr><td>Threat score</td><td>Two scores. The bot score rates automation, and the suspect score adds up many small signals.</td><td>Web page</td></tr>
+      <tr><td>Virtual machine</td><td>Virtual machines and software graphics.</td><td>Web page</td></tr>
+      <tr><td>Modified phone</td><td>Android emulators, custom firmware, and phones whose model doesn't fit their hardware. A web page can't read root status directly, so a rooted phone that changes nothing passes.</td><td>Web page</td></tr>
+    </table>
+
+    <h2>Presets</h2>
+    <table>
+      <tr><th>Preset</th><th>Meant for</th></tr>
+      <tr><td>Gentle</td><td>Learning. Nothing blocks anyone, and everything is recorded.</td></tr>
+      <tr><td>Standard</td><td>Most servers. Stops what's clearly hostile, and watches what could be innocent, such as VPNs and private windows.</td></tr>
+      <tr><td>Strict</td><td>Servers under attack. Turns on Auto Kick. Expect some real members to need staff help.</td></tr>
+    </table>
+    <p>A preset changes nothing until you save. It never touches roles, channels, messages, logs, alerts, country rules, the help desk, the honeypot, cooldown or the two-factor rule.</p>
+
+    <h2>How alt matching works</h2>
+    <p>Each kind of evidence carries a weight, and the total sets the confidence.</p>
+    <table>
+      <tr><th>Evidence</th><th>Weight</th></tr>
+      <tr><td>Same browser cookie</td><td>100</td></tr>
+      <tr><td>Same browser fingerprint</td><td>70, or 35 on iPhones and iPads, which look alike</td></tr>
+      <tr><td>Same connection</td><td>35, or 10 on mobile, VPN and carrier-shared addresses</td></tr>
+      <tr><td>Same kind of device, across browsers</td><td>20</td></tr>
+    </table>
+    <p>A total of 100 is <strong>confirmed</strong>, 70 is <strong>likely</strong>, and 30 is <strong>possible</strong>. By default AltWarden acts on likely or stronger, so a shared home connection alone never stops a sibling. Matches only ever compare accounts in your own server.</p>
+    <p>An alt of a banned account has its own action, so you can ban ban evaders and only deny everyone else. If two accounts are really two people, approve the appeal with "trust the link", or run <code>/trust-accounts</code>, and they won't match again.</p>
+
+    <h2>Staff tools</h2>
+    <p><strong>Logs.</strong> Each rule has its own log module, and staff actions, verified members, Auto Kick, the help desk, the honeypot, raids, appeals and settings changes each have one too. Send each to its own channel, a whole category to one channel, or everything to one channel. Logs never show an IP address, email, cookie, fingerprint or country.</p>
+    <p><strong>Alerts.</strong> Ping a role in a module's channel whenever that rule catches someone.</p>
+    <p><strong>Bypass links.</strong> A link for one member that skips the checks you pick, for 1 to 168 hours. Every other check still runs, even on a server in Button mode. The link is shown to you once, and it's never posted in a log or a channel. If you choose to notify in a channel, the member presses Verify to get it.</p>
+    <p><strong>Help desk.</strong> Adds a help button that opens a private thread with your support role. The first message is pinned and lists the member's failed attempts. Threads archive after a week of quiet, reopen when the member presses the button again, and close when the member leaves.</p>
+    <p><strong>Honeypot.</strong> Anything posted in the trap channel is deleted, and the account is logged, timed out, kicked, softbanned or banned. Posts in threads under the channel are caught too. Roles you whitelist are ignored, and webhooks are only logged.</p>
+    <p><strong>Appeals.</strong> Members who were stopped can explain themselves, and staff decide with buttons in Discord or on the dashboard.</p>
+    <p><strong>Raid mode.</strong> When joins spike, the rules tighten for a while and staff are alerted. You can also start it with <code>/raid</code>.</p>
+
+    <h2>Messages</h2>
+    <p>The Messages page edits the verification message, the first message of each help thread, and the honeypot warning, with a live preview. The verification message is posted again when you change it, change the channel, or turn the help desk on or off. A changed message names the staff member who wrote it, with a link to report it.</p>
+
+    <p>The same page sets AltWarden's profile in your server: one of eight pictures, a name, a bio, and a name style with any of 12 fonts and 7 effects. Discord doesn't publish the name style fields in its reference, so a change on Discord's side could stop them working. If Discord refuses a style, the page says so and the rest still saves.</p>
+
+    <h2>Who can do what</h2>
+    <p>The Access page sets who can open each dashboard page and run each command, using Discord's own order. A member override decides first, then roles, then Everyone, then the required permissions. The server owner and Administrators always pass, so nobody gets locked out. Commands can also be limited to chosen channels.</p>
+    <p>The page also shows Discord's own command permissions, the same ones as Server Settings, Integrations. These decide who sees a command in Discord's list. Discord only takes changes to them from a person's account, so saving asks you to approve the change on Discord once. AltWarden makes the change and ends that approval straight away, and keeps no token.</p>
+
+    <h2>Commands</h2>
+    <table>
+      <tr><th>Command</th><th>What it does</th></tr>
+      <tr><td><code>/setup</code></td><td>Sets the verified role and channel, and posts the message.</td></tr>
+      <tr><td><code>/settings</code></td><td>Shows how verification is set up.</td></tr>
+      <tr><td><code>/post-message</code></td><td>Posts the verification or honeypot message again.</td></tr>
+      <tr><td><code>/health</code></td><td>Finds what would stop members from verifying.</td></tr>
+      <tr><td><code>/verify-user</code></td><td>Verifies a member yourself.</td></tr>
+      <tr><td><code>/reset-user</code></td><td>Clears a member's records so they verify again.</td></tr>
+      <tr><td><code>/create-bypass</code></td><td>Makes a link that skips the checks you choose, for one member.</td></tr>
+      <tr><td><code>/lookup</code></td><td>Shows a member's history and links.</td></tr>
+      <tr><td><code>/trust-accounts</code></td><td>Marks two accounts as different people.</td></tr>
+      <tr><td><code>/import-members</code></td><td>Marks everyone with a role as verified.</td></tr>
+      <tr><td><code>/raid</code></td><td>Turns raid mode on or off.</td></tr>
+      <tr><td><code>/uninstall</code></td><td>Deletes all settings and records for the server.</td></tr>
+      <tr><td><code>/my-data</code></td><td>Links anyone to their own data.</td></tr>
+      <tr><td><code>/help</code>, <code>/ping</code></td><td>Links, and a speed check.</td></tr>
+    </table>
+    <p>Right-click a member and open Apps for Verify, Reset, Create Bypass and Lookup. The Access page on the dashboard controls who can use each one, and where.</p>
+
+    <h2>Integrations</h2>
+    <p>The Integrations page sends signed webhooks for <code>member.verified</code>, <code>member.failed</code>, <code>appeal.opened</code>, <code>appeal.decided</code>, <code>raid.started</code> and <code>raid.ended</code>. Check the signature by computing HMAC-SHA256 of <code>t.body</code> with your secret.</p>
+    <pre><code>X-AltWarden-Signature: t=1793760000,v1=5f2b...</code></pre>
+    <p>API keys answer one question, whether a member is verified:</p>
+    <pre><code>GET /api/v1/guilds/{guild}/members/{user}
+Authorization: Bearer aw_...
+
+{"verified": true, "verified_at": 1793760000.0}</code></pre>
+
+    <h2>Common problems</h2>
+    <table>
+      <tr><th>What you see</th><th>What to do</th></tr>
+      <tr><td>Members don't get the role</td><td>In Server Settings, Roles, drag AltWarden's role above the role it gives, and check it has Manage Roles. If you recreated the role, pick the new one on the Rules page.</td></tr>
+      <tr><td>A member says the link doesn't work</td><td>Links last an hour, or your Auto Kick time, and stop working once used or replaced. The member can press Verify in the channel for a new one.</td></tr>
+      <tr><td>Your server isn't on the dashboard</td><td>You need access to at least one page, which by default means Manage Server. Sign out and back in if your roles changed.</td></tr>
+      <tr><td>The verification message is gone</td><td>Run <code>/post-message</code>, or press Post it again on the Messages page.</td></tr>
+      <tr><td>A real member keeps failing one check</td><td>Send a bypass link that skips only that check, or verify them yourself with <code>/verify-user</code>.</td></tr>
+      <tr><td>A member wants their data deleted</td><td>They can do it themselves at <a href="/my-data">My data</a>, with no request to you or anyone else.</td></tr>
+    </table>
+    <p>For anything else, run <code>/health</code> first, then open an issue on <a href="https://github.com/hifihedgehog/AltWarden/issues">GitHub</a>.</p>
+
+    <h2>Host it yourself</h2>
+    <p>AltWarden is one Python process with a SQLite file. See the <a href="https://github.com/hifihedgehog/AltWarden#host-it-yourself">README</a>.</p>
+  </main>
+  <footer class="site-footer"><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/security">Security</a></footer>
+</body>
+</html>

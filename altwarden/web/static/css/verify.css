@@ -1,0 +1,28 @@
+body { min-height: 100vh; display: flex; flex-direction: column; }
+.verify-main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+.verify-card { width: 100%; max-width: 440px; padding: 28px; box-shadow: var(--shadow); text-align: center; }
+.verify-who { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 18px; }
+.verify-who img { width: 64px; height: 64px; border-radius: 18px; background: var(--bg-sunken); }
+.verify-card h1 { font-size: 1.35rem; margin-bottom: 6px; }
+.verify-card p { color: var(--text-soft); }
+.verify-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.verify-actions .button { width: 100%; }
+.steps { list-style: none; padding: 0; margin: 18px 0 4px; text-align: left; }
+.steps li { display: flex; align-items: center; gap: 10px; padding: 7px 0; color: var(--text-faint); }
+.steps li.active { color: var(--text); }
+.steps li.done { color: var(--text-soft); }
+.steps .dot { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); }
+.steps li.active .dot { border-color: var(--accent); border-top-color: transparent; animation: spin .8s linear infinite; }
+.steps li.done .dot { background: var(--green); border-color: var(--green); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .steps li.active .dot { animation: none; } }
+.result-mark { width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 50%; display: grid; place-items: center; font-size: 1.7rem; font-weight: 700; color: #fff; }
+.result-mark.good { background: var(--green); }
+.result-mark.bad { background: var(--red); }
+.result-mark.wait { background: var(--amber); }
+.verify-for { font-size: .9rem; }
+.privacy-line { margin-top: 16px; font-size: .85rem; color: var(--text-faint); }
+.privacy-line a { color: var(--text-soft); text-decoration: underline; }
+.verify-note { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-small); background: var(--bg-sunken); color: var(--text-soft); font-size: .92rem; }
+.page-foot { padding: 14px; text-align: center; color: var(--text-faint); font-size: .85rem; }
+.page-foot a { color: var(--text-soft); }

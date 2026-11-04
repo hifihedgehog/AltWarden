@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security | AltWarden</title>
+  <link rel="icon" href="/static/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/base.css">
+</head>
+<body>
+  <header class="site-header"><a class="brand" href="/"><img src="/static/img/logo.svg" alt="">AltWarden</a></header>
+  <main class="prose">
+    <h1>Security</h1>
+    <p>AltWarden is built on one assumption: the database will leak someday. Everything below follows from planning for that.</p>
+
+    <h2>What a stolen database gives an attacker</h2>
+    <table>
+      <tr><th>They would get</th><th>They would not get</th></tr>
+      <tr><td>Discord IDs, usernames and avatars of people who verified</td><td>Any IP address, email address, cookie value or fingerprint</td></tr>
+      <tr><td>Attempt results and labels</td><td>Any Discord access or refresh token</td></tr>
+      <tr><td>Keyed hashes they can't read without the key</td><td>A way to connect one person across two servers</td></tr>
+    </table>
+
+    <h2>How it's built</h2>
+    <ul>
+      <li>Identifiers are hashed with HMAC-SHA256 under keys derived per server and per kind with HKDF from RFC 5869.</li>
+      <li>The master key lives in the process environment and never in the database or its backups.</li>
+      <li>Discord tokens are revoked under RFC 7009 right after one read, so none exist at rest. Staff who save Discord's command permissions approve one write, and that token is revoked the same way.</li>
+      <li>Verification links are stored as hashes, work for one member, and expire.</li>
+      <li>The sign-in state value is tied to the browser that started it.</li>
+      <li>Every page sends a strict Content Security Policy that allows scripts from this site only.</li>
+      <li>The page that receives Discord's code loads nothing and redirects at once, as RFC 9700 section 4.2.4 advises.</li>
+      <li>Browser libraries are copied into this site at fixed versions, so a compromised CDN can't reach members.</li>
+      <li>No admin tools listen on public addresses. The application binds to the local machine behind a proxy.</li>
+      <li>Request logs are off in the application, and the site's access log records no client addresses or page paths.</li>
+      <li>The bot asks only for the permissions its features use. It doesn't need Administrator.</li>
+    </ul>
+
+    <h2>Known limits</h2>
+    <ul>
+      <li><strong>Browser checks can be forged.</strong> They run in the member's browser, so a custom client can report anything. They stop ordinary tools and raise the cost. Network, account and cookie-signature checks don't depend on that report.</li>
+      <li><strong>A full takeover of the server defeats the hashing.</strong> Someone with both the database and the master key can test guesses against a hash. IPv4 has few enough addresses for that to work. Keeping the key separate protects against a stolen database or backup, which is how most leaks happen.</li>
+      <li><strong>A running process sees real addresses for a moment.</strong> They exist in memory during a request.</li>
+      <li><strong>Lists go stale.</strong> VPN and country data is refreshed weekly, and new VPN servers can slip through until then.</li>
+      <li><strong>Root can't be read from a web page.</strong> No browser API reports it, and the services that do report it read it from a native app. The Modified phone check catches what rooting lets a phone do: pose as another model, or run firmware newer than the phone ever got. A rooted phone that changes neither passes, and so does a jailbroken iPhone.</li>
+    </ul>
+
+    <h2 id="abuse">Reporting a message</h2>
+    <p>Server staff can rewrite the messages AltWarden posts, so each rewritten message names the person who wrote it. If one is a scam or harassment, tell that server's owner, report the message to Discord, and open an issue on <a href="https://github.com/hifihedgehog/AltWarden/issues">GitHub</a> with the server's name.</p>
+
+    <h2>Reporting a problem</h2>
+    <p>Report security problems privately through <a href="https://github.com/hifihedgehog/AltWarden/security/advisories/new">GitHub</a>, not in a public issue.</p>
+  </main>
+  <footer class="site-footer"><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/docs">Docs</a></footer>
+</body>
+</html>

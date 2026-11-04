@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AltWarden: Discord verification that keeps nothing readable</title>
+  <meta name="description" content="AltWarden is an open-source Discord verification bot. It stops alt accounts, ban evaders, VPNs and raids, and stores no readable IP addresses, emails or fingerprints.">
+  <meta property="og:title" content="AltWarden">
+  <meta property="og:description" content="Open-source Discord verification that keeps nothing readable.">
+  <meta property="og:image" content="/static/img/logo-512.png">
+  <link rel="icon" href="/static/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/"><img src="/static/img/logo.svg" alt="">AltWarden</a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="/docs">Docs</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/security">Security</a>
+      <a href="https://github.com/hifihedgehog/AltWarden">GitHub</a>
+      <a class="button small primary" href="/dashboard">Dashboard</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Keep alt accounts out.<br>Keep nothing readable.</h1>
+      <p>AltWarden checks new Discord members for alt accounts, ban evasion, VPNs and raids. If its database were stolen tomorrow, the thief would find no IP addresses, no emails, no Discord tokens and no fingerprints.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="/invite">Add to Discord</a>
+        <a class="button" href="https://github.com/hifihedgehog/AltWarden">Read the source</a>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>Why it exists</h2>
+      <p>In October 2026 the verification bot Double Counter said an attacker may have reached records on about 28 million Discord accounts, including about 27 million IP addresses. <a href="https://haveibeenpwned.com/Breach/DoubleCounter">Have I Been Pwned</a> lists about 275,000 email addresses from the leak. Verification bots collect that data because they need it for a moment. AltWarden uses it for that moment and keeps a keyed hash instead, under a separate key for every server.</p>
+    </section>
+
+    <section class="features">
+      <article>
+        <h3>Nothing readable at rest</h3>
+        <p>Addresses, cookies and fingerprints become keyed hashes before they touch the disk. Emails are never stored. Discord tokens are revoked seconds after sign-in.</p>
+      </article>
+      <article>
+        <h3>No ads, no trackers</h3>
+        <p>The verification page loads nothing from any other site, so nothing competes with the real button and ad blockers can stay on.</p>
+      </article>
+      <article>
+        <h3>Watch before you block</h3>
+        <p>Every rule has a Watch setting that records a match and lets the member in. Learn what a rule would catch before it stops anyone.</p>
+      </article>
+      <article>
+        <h3>Alt matching that weighs evidence</h3>
+        <p>A shared home connection isn't proof. Each match gets a confidence level, and an alt of a banned account can be treated differently from a sibling.</p>
+      </article>
+      <article>
+        <h3>Raid mode</h3>
+        <p>A spike in joins tightens the rules by itself and alerts staff, then relaxes when it's over.</p>
+      </article>
+      <article>
+        <h3>Your members control their data</h3>
+        <p>Anyone can see what's held about them and delete it, with no ticket and no waiting.</p>
+      </article>
+    </section>
+
+    <section class="band">
+      <h2>Everything a verification bot should do</h2>
+      <div class="columns">
+        <ul>
+          <li>Web, button and instant verification</li>
+          <li>Account age, profile picture, two-factor login</li>
+          <li>Throwaway email detection</li>
+          <li>Alt detection by cookie, fingerprint and connection</li>
+          <li>VPN, proxy, Tor, Private Relay and data centers</li>
+          <li>Mobile data rules</li>
+          <li>Country rules on a map or globe</li>
+        </ul>
+        <ul>
+          <li>Automated, anti-detect and tampered browsers</li>
+          <li>Fake browser identity, developer tools, private windows</li>
+          <li>Virtual machines, emulated and modified phones</li>
+          <li>Bot and suspect scores, free on every server</li>
+          <li>Logs, alerts, audit log and analytics</li>
+          <li>Help desk threads, appeals, bypass links, honeypot</li>
+          <li>Per-page and per-command access rules, and Discord's own command permissions</li>
+          <li>Its own picture, name, bio and name style in each server</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>What it can't do</h2>
+      <p>Browser checks run in the member's own browser, so someone with a custom client can lie to them. Network and account checks don't have that weakness. Home connections are shared by families, and no bot can tell two siblings from one person with two accounts on one laptop every time. AltWarden shows staff how strong each match is and leaves the call to them. The <a href="/security">security page</a> has the full list.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>AltWarden is open source under the MIT license.</span>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/my-data">My data</a>
+    <a href="/help">Help</a>
+  </footer>
+</body>
+</html>
