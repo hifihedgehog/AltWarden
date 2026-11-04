@@ -28,7 +28,7 @@ function header(state) {
 
 function privacyLine() {
   const line = el("p", { class: "privacy-line" });
-  line.append(t("No ads, no trackers, and nothing readable about you is stored. "));
+  line.append(t("No ads, no trackers, and your IP address and email are never stored in readable form. "));
   line.append(el("a", { href: "/privacy", text: t("How this works") }));
   return line;
 }

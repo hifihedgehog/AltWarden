@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/header.png" alt="AltWarden: Discord verification that keeps nothing readable" width="100%">
+  <img src="assets/header.png" alt="AltWarden: Discord verification with no readable IPs or emails" width="100%">
 </p>
 
 <p align="center">

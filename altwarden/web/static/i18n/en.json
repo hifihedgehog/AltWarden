@@ -1,5 +1,5 @@
 [
-"No ads, no trackers, and nothing readable about you is stored. ",
+"No ads, no trackers, and your IP address and email are never stored in readable form. ",
 "How this works",
 "This link has expired",
 "Press Verify in the server's verification channel to get a new one.",
@@ -15,6 +15,7 @@
 "You weren't verified",
 "Your last attempt didn't pass. Press Try again when you're ready.",
 "Try again",
+"Appeal to staff",
 "Signed in",
 "Checking your browser",
 "Checking your connection",
@@ -27,7 +28,6 @@
 "Reload",
 "You're verified",
 "You now have access to {server}. You can close this tab.",
-"Appeal to staff",
 "You were removed from the server.",
 "You were banned from the server.",
 "You can try again after {date}.",

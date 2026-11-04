@@ -3,7 +3,7 @@
 No raw IP address, cookie value or browser fingerprint reaches the database. Each one is
 replaced by an HMAC under a key derived for one server and one kind of identifier, so:
 
-  * a stolen database holds no readable identifiers,
+  * a stolen database holds no readable IP address, cookie or fingerprint,
   * the same person has unrelated digests in two servers, so nobody can link them,
   * the master key stays out of the database, so the digests can't be reversed from it alone.
 
