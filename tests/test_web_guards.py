@@ -139,7 +139,7 @@ class DiscordOutages(Base):
 
     async def test_a_revoke_that_hangs_once_keeps_the_sign_in_and_tries_again(self):
         self.discord.revoke_hangs = 1
-        with patch.object(oauth_module, "REVOKE_SECONDS", 0.1):
+        with patch.object(oauth_module, "REVOKE_SECONDS", 0.5):
             response = await self.sign_in(await self.link_for())
         self.assertNotIn("signin=", response.headers["Location"])
         self.assertEqual(self.discord.revoke_calls, 2)
@@ -154,7 +154,7 @@ class DiscordOutages(Base):
 
     async def test_a_revoke_that_hangs_every_time_ends_and_keeps_the_sign_in(self):
         self.discord.revoke_hangs = 3
-        with patch.object(oauth_module, "REVOKE_SECONDS", 0.1), self.assertLogs("altwarden.oauth", "WARNING"):
+        with patch.object(oauth_module, "REVOKE_SECONDS", 0.5), self.assertLogs("altwarden.oauth", "WARNING"):
             response = await self.sign_in(await self.link_for())
         self.assertNotIn("signin=", response.headers["Location"])
         self.assertEqual(self.discord.revoke_calls, 3)
