@@ -1021,7 +1021,7 @@ class SiteWideAnswers(Base):
         self.assertEqual((response.status, response.headers["Cache-Control"]), (404, "no-store"))
 
     async def test_a_library_file_still_caches_for_a_year_and_its_304_too(self):
-        name = next((Path(app_module.__file__).parent / "static" / "vendor").iterdir()).name
+        name = next(path for path in (Path(app_module.__file__).parent / "static" / "vendor").iterdir() if path.is_file()).name
         response = await self.client.get(f"/static/vendor/{name}")
         self.assertEqual(response.status, 200)
         self.assertIn("immutable", response.headers["Cache-Control"])

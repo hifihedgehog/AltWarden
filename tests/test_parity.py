@@ -164,8 +164,8 @@ class EarlierAccount(Helpers):
 
     async def test_log_says_whether_system_and_browser_match(self):
         await self.alt_after(alt_action="deny", main_action="watch")
-        self.assertIn("same system", self.logged())
-        self.assertIn("same browser", self.logged())
+        self.assertIn("Operating system: same", self.logged())
+        self.assertIn("Browser: same", self.logged())
 
     async def test_a_different_browser_is_named(self):
         await self.change(alt_account={"enabled": True, "alt_action": "deny", "methods": {"cookie": True, "fingerprint": False, "ip": False}, "min_confidence": "possible"})

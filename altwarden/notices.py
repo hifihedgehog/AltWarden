@@ -199,10 +199,40 @@ def _embed(message: dict, guild_name: str, public_url: str = "") -> dict:
 
 # --- staff logs ---------------------------------------------------------------------------------
 
-def _account_field(user_id: str, username: str) -> dict:
+METHOD_NAMES = {"cookie": "Browser cookie", "fingerprint": "Browser fingerprint", "ip": "IP address", "device": "Device"}
+
+
+def _safe_name(user_id: str, username: str) -> str:
     # A display name can hold anything. Inside a code span only a backtick or a line break can get out.
-    name = re.sub(r"[`\r\n]", "", username or "") or user_id
-    return {"name": "Account", "value": f"<@{user_id}>\n`{name}`", "inline": True}
+    return re.sub(r"[`\r\n]", "", username or "") or user_id
+
+
+def _account_field(user_id: str, username: str) -> dict:
+    return {"name": "Account", "value": f"<@{user_id}>\n`{_safe_name(user_id, username)}`", "inline": True}
+
+
+def _alt_fields(user_id: str, detail: dict) -> list[dict]:
+    """Which account is which, what matched, and what the two devices have in common."""
+    other = f"<@{detail['account']}>" + (" (banned)" if detail.get("banned") else "")
+    me = f"<@{user_id}>"
+    alt, main = (me, other) if detail.get("other_is_main", True) else (other, me)
+    fields = [{"name": "Alt account", "value": alt, "inline": True}, {"name": "Main account", "value": main, "inline": True},
+              {"name": "Detection", "value": ", ".join(METHOD_NAMES.get(method, method) for method in detail.get("methods", [])) or "Unknown", "inline": False}]
+    device = [f"{name}: {'same' if detail[key] else 'different'}" for key, name in (("same_os", "Operating system"), ("same_browser", "Browser")) if detail.get(key) is not None]
+    if device:
+        fields.append({"name": "Matching device", "value": "\n".join(device), "inline": False})
+    return fields
+
+
+def _attempt_sentence(name: str, decision) -> str:
+    if decision.passed:
+        return f"`{name}` passed verification." if not decision.findings else f"`{name}` passed verification, with checks on Watch."
+    primary = decision.primary
+    if primary.check_id == "alt_account":
+        return f"`{name}` matched an earlier account."
+    if primary.check_id == "max_attempts":
+        return f"`{name}` reached the attempt limit."
+    return f"`{name}` was stopped by {check_name(primary.check_id)}."
 
 
 def _detail_text(finding) -> str:
@@ -219,11 +249,7 @@ def _detail_text(finding) -> str:
     if "bot_score" in detail:
         parts.append(f"bot {detail['bot_score']}, suspect {detail['suspect_score']}")
     if "account" in detail:
-        banned = ", banned account" if detail.get("banned") else ""
-        parts.append(f"<@{detail['account']}>, {detail['confidence']} ({', '.join(detail['methods'])}){banned}")
-        for key, name in (("same_os", "system"), ("same_browser", "browser")):
-            if detail.get(key) is not None:
-                parts.append(f"{'same' if detail[key] else 'different'} {name}")
+        parts.append(f"{detail['confidence'].capitalize()} match, score {detail['score']}")
     if detail.get("capped"):
         parts.append("action lowered, because a link below confirmed never removes anyone by itself")
     if "list" in detail:
@@ -231,7 +257,7 @@ def _detail_text(finding) -> str:
     return "; ".join(parts)
 
 
-def attempt_log(user_id: str, username: str, avatar_url: str | None, decision, *, took: str, bypassed: list, mode: str, role_given: str | None = None) -> dict:
+def attempt_log(user_id: str, username: str, avatar_url: str | None, decision, *, took: str, bypassed: list, mode: str, role_given: str | None = None, guild_name: str | None = None) -> dict:
     """One embed for one attempt, listing everything it tripped. Holds no raw identifiers."""
     if decision.passed and not decision.findings:
         title, color = "Member verified", GREEN
@@ -245,11 +271,15 @@ def attempt_log(user_id: str, username: str, avatar_url: str | None, decision, *
     for finding in decision.findings[:10]:
         label = f"{check_name(finding.check_id)}: {ACTION_LABEL[finding.action]}"
         fields.append({"name": label, "value": _detail_text(finding) or FAILURE_TEXT[finding.reason].format(**(finding.text_args or _no_args(finding))), "inline": False})
+        if finding.check_id == "alt_account" and "account" in finding.detail:
+            fields += _alt_fields(user_id, finding.detail)
     if bypassed:
         fields.append({"name": "Skipped by bypass link", "value": ", ".join(check_name(item) for item in bypassed), "inline": False})
-    embed = {"title": title, "color": color, "fields": fields}
+    embed = {"title": title, "description": _attempt_sentence(_safe_name(user_id, username), decision), "color": color, "fields": fields}
     if avatar_url:
         embed["thumbnail"] = {"url": avatar_url}
+    if guild_name:
+        embed["footer"] = {"text": guild_name}
     return embed
 
 

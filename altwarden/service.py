@@ -945,7 +945,7 @@ class Service:
             modules = ["success"] + [finding.check_id for finding in decision.findings]
             await self._log(guild_id, rules, modules, notices.attempt_log(
                 user_id, account.username, avatar_url, decision, took="Verified" + main_note, bypassed=bypassed, mode=mode,
-                role_given=rules["core"]["verified_role"]))
+                role_given=rules["core"]["verified_role"], guild_name=guild_name))
             await self._emit(guild_id, "member.verified", {"user_id": user_id, "mode": mode,
                                                            "watched": [finding.check_id for finding in decision.findings]})
             return Result("verified", "You're verified", f"You now have access to {guild_name}.")
@@ -1015,7 +1015,7 @@ class Service:
         took += await self._act_on_link(guild_id, rules, user_id, decision, guild_name)
         modules = [finding.check_id for finding in decision.findings]
         await self._log(guild_id, rules, modules, notices.attempt_log(user_id, account.username, avatar_url, decision, took=took,
-                                                                      bypassed=bypassed, mode=mode))
+                                                                      bypassed=bypassed, mode=mode, guild_name=guild_name))
         await self._emit(guild_id, "member.failed", {"user_id": user_id, "check": primary.check_id, "action": done,
                                                      "checks": modules})
         return _failed_result(rules, primary, done, retry_on=retry_on, attempts_left=attempts_left)
@@ -1104,7 +1104,9 @@ class Service:
         await self.db.add_attempt(guild_id, user_id, "manual", mode="staff", detail={"by": actor_id})
         await self.db.add_audit(guild_id, "manual_verify", actor_id=actor_id, actor_name=actor_name, detail={"user": user_id})
         await self._close_help_thread(guild_id, document, user_id)
-        await self._log(guild_id, document, ["general"], notices.staff_log("Member verified", f"<@{actor_id}> verified <@{user_id}>."))
+        picture = _avatar_url(user_id, (await self.db.member(guild_id, user_id) or {}).get("avatar"))
+        await self._log(guild_id, document, ["general"], notices.staff_log("Member verified", f"Staff member <@{actor_id}> verified <@{user_id}>.", notices.GREEN,
+                                                                           **({"thumbnail": {"url": picture}} if picture else {}), **({"footer": {"text": actor_name}} if actor_name else {})))
         await self._emit(guild_id, "member.verified", {"user_id": user_id, "mode": "staff"})
         return None
 
