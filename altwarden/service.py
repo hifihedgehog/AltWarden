@@ -474,7 +474,7 @@ class Service:
         self.raid.forget(guild_id)
         await self.db.add_audit(guild_id, "raid_stop", actor_id=actor_id, actor_name=actor_name)
         who = f" <@{actor_id}> turned it off." if actor_id else ""
-        await self._log(guild_id, document, ["raid", "general"], notices.staff_log("Raid mode off", f"Normal rules apply again.{who}", notices.GREEN))
+        await self._log(guild_id, document, ["raid", "general"], notices.staff_log("Raid mode off", f"Normal rules apply again.{who}", notices.GREEN), alert_for=[])
         await self._emit(guild_id, "raid.ended", {})
 
     # --- links ------------------------------------------------------------------------------
@@ -1421,9 +1421,10 @@ class Service:
         card = notices.appeal_card(appeal_id, user_id, username, last["check_id"], text, linked=bool(linked))
         appeals = document["appeals"]
         target = appeals["channel"] or document["core"]["logs"]["modules"].get("appeals") or document["core"]["logs"]["modules"].get("general")
-        if appeals["role"]:
-            card.content = f"<@&{appeals['role']}>"
-            card.mention_roles = [appeals["role"]]
+        role = appeals["role"] or settings_module.alert_role(document, "appeals")
+        if role:
+            card.content = f"<@&{role}>"
+            card.mention_roles = [role]
         if target:
             message_id = await self.port.send(target, card, guild_id=guild_id)
             await self.db.run("UPDATE appeals SET channel_id = ?, message_id = ? WHERE id = ?", (target, message_id, appeal_id))
@@ -1741,7 +1742,7 @@ class Service:
             await self.db.set_guild_field(row["guild_id"], "raid_until", 0)
             self.raid.forget(row["guild_id"])
             await self.db.add_audit(row["guild_id"], "raid_stop", detail={"why": "Its time ran out"})
-            await self._log(row["guild_id"], document, ["raid", "general"], notices.staff_log("Raid mode ended", "Normal rules apply again.", notices.GREEN))
+            await self._log(row["guild_id"], document, ["raid", "general"], notices.staff_log("Raid mode ended", "Normal rules apply again.", notices.GREEN), alert_for=[])
             await self._emit(row["guild_id"], "raid.ended", {})
 
     async def _return_attempts(self, now: float) -> None:
@@ -1848,10 +1849,10 @@ class Service:
         for name in modules:
             if name in logs["modules"]:
                 channels.setdefault(logs["modules"][name], []).append(name)
-        alerts = rules["core"]["alerts"]
         posted = False
         for index, (channel_id, names) in enumerate(channels.items()):
-            roles = [alerts["roles"][name] for name in names if alerts["enabled"] and name in alerts["roles"] and (alert_for is None or name in alert_for)]
+            # Raid mode's own role, when it has one, replaces the main role for the raid's channel.
+            roles = [role for name in names if (alert_for is None or name in alert_for) and not (name == "raid" and alert_role) and (role := settings_module.alert_role(rules, name))]
             if alert_role and index == 0:
                 roles.append(alert_role)
             roles = list(dict.fromkeys(roles))

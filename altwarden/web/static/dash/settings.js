@@ -281,12 +281,18 @@ export async function render(view) {
 
   function alertsDialog() {
     const alerts = draft.core.alerts;
-    const rows = state.catalog.log_modules.filter((module) => draft.core.logs.modules[module.id] && !ALERTS_ELSEWHERE.has(module.id)).map((module) =>
-      field(module.name, rolePicker(alerts.roles[module.id], (value) => edit(() => {
-        if (value) alerts.roles[module.id] = value;
-        else delete alerts.roles[module.id];
-      }), { none: "No ping", disabled: !canEdit })));
-    dialog("Alerts", rows.length ? h("div", { class: "grid two" }, rows) : h("p", { text: "Give a log module a channel first." }), { wide: true, buttons: [{ label: "Done" }], onClose: () => draw() });
+    const important = new Set(state.catalog.important_alerts);
+    const rows = state.catalog.log_modules.filter((module) => draft.core.logs.modules[module.id] && !ALERTS_ELSEWHERE.has(module.id)).map((module) => {
+      const main = important.has(module.id);
+      const value = alerts.roles[module.id] ?? (main && alerts.off.includes(module.id) ? "off" : null);
+      return field(module.name, rolePicker(value, (picked) => edit(() => {
+        alerts.off = alerts.off.filter((id) => id !== module.id);
+        delete alerts.roles[module.id];
+        if (picked === "off") alerts.off.push(module.id);
+        else if (picked) alerts.roles[module.id] = picked;
+      }), { none: main ? "Main role" : "No ping", extra: main ? [{ id: "off", name: "No ping" }] : [], disabled: !canEdit, label: module.name }));
+    });
+    dialog("Customize alerts", rows.length ? h("div", {}, h("p", { class: "muted", text: "Everything that stops someone starts on the main role. Change any of them here, or give one its own role." }), h("div", { class: "grid two" }, rows)) : h("p", { text: "Give a log module a channel first." }), { wide: true, buttons: [{ label: "Done" }], onClose: () => draw() });
   }
 
   async function exportCode() {
@@ -377,7 +383,8 @@ export async function render(view) {
     const onCount = (list) => list.filter(Boolean).length;
     // A deleted channel or role logs nothing and pings nobody, so it doesn't count as set.
     const logged = Object.values(core.logs.modules).filter(channelExists).length;
-    const pinging = Object.entries(core.alerts.roles).filter(([module, role]) => !ALERTS_ELSEWHERE.has(module) && roleExists(role)).length;
+    const importantAlerts = new Set(state.catalog.important_alerts);
+    const pinging = state.catalog.log_modules.filter(({ id }) => !ALERTS_ELSEWHERE.has(id) && roleExists(core.alerts.roles[id] ?? (importantAlerts.has(id) && !core.alerts.off.includes(id) ? core.alerts.role : null))).length;
     presetBox = h("div", {}, presets());  // a new box, because moving the old one out of the page would drop the keyboard's place
     fill(root,
       canEdit ? null : h("div", { class: "notice", text: LOCKED_NOTE }),
@@ -419,7 +426,8 @@ export async function render(view) {
         switchRow("logs", "Logs", `${plural(logged, "module")} ${logged === 1 ? "has" : "have"} a channel.`, core.logs.enabled, (value) => edit(() => { core.logs.enabled = value; }, true),
           [h("button", { class: "button small", text: "Choose channels", onclick: logsDialog })]),
         switchRow("alerts", "Alerts", core.logs.enabled ? `${plural(pinging, "module")} ${pinging === 1 ? "pings" : "ping"} a role.` : "Waiting: turn on Logs first, because alerts post in the logs channels.", core.alerts.enabled, (value) => edit(() => { core.alerts.enabled = value; }, true),
-          [h("button", { class: "button small", text: "Choose roles", onclick: alertsDialog })]),
+          [field("Role to ping", rolePicker(core.alerts.role, (value) => edit(() => { core.alerts.role = value; }), { disabled: !canEdit }), "Pinged when a check stops someone, the honeypot catches someone, a raid starts or an appeal comes in."),
+            h("button", { class: "button small", text: "Customize", onclick: alertsDialog })]),
         switchRow("helpdesk", "Help desk", "Add a help button that opens a private thread with staff.", core.help_desk.enabled, (value) => edit(() => { core.help_desk.enabled = value; }, true), [
           field("Support role", rolePicker(core.help_desk.support_role, (value) => edit(() => { core.help_desk.support_role = value; }), { disabled: !canEdit })),
           ...[["require_attempt", "Members must try verifying first"], ["redirect", "Add a Talk to staff button to the result page"], ["auto_close", "Close the thread when the member verifies"], ["member_close", "Members can close their own thread"]].map(([key, label]) =>
@@ -428,7 +436,7 @@ export async function render(view) {
         ]),
         switchRow("appeals", "Appeals", "Let stopped members explain themselves. Staff decide with buttons in Discord.", draft.appeals.enabled, (value) => edit(() => { draft.appeals.enabled = value; }, true), [
           field("Appeals channel", channelPicker(draft.appeals.channel, (value) => edit(() => { draft.appeals.channel = value; }), { none: "Use the Appeals log channel", disabled: !canEdit })),
-          field("Role to ping", rolePicker(draft.appeals.role, (value) => edit(() => { draft.appeals.role = value; }), { none: "No ping", disabled: !canEdit })),
+          field("Role to ping", rolePicker(draft.appeals.role, (value) => edit(() => { draft.appeals.role = value; }), { none: "Main alert role", disabled: !canEdit })),
         ]))),
 
       section(counted("Attack protection", onCount(attackSwitches), attackSwitches.length), null, h("div", { class: "rule-list" },
@@ -437,7 +445,7 @@ export async function render(view) {
           field("Within seconds", number(draft.raid.seconds, (value) => edit(() => { draft.raid.seconds = value; }), { min: 5, max: 3600, disabled: !canEdit })),
           field("Stay on for minutes", number(draft.raid.duration_minutes, (value) => edit(() => { draft.raid.duration_minutes = value; }), { min: 1, max: 1440, disabled: !canEdit })),
           field("Minimum account age during a raid (days)", number(draft.raid.min_account_days, (value) => edit(() => { draft.raid.min_account_days = value; }), { min: 0, max: 365, disabled: !canEdit })),
-          field("Role to ping", rolePicker(draft.raid.alert_role, (value) => edit(() => { draft.raid.alert_role = value; }), { none: "No ping", disabled: !canEdit })),
+          field("Role to ping", rolePicker(draft.raid.alert_role, (value) => edit(() => { draft.raid.alert_role = value; }), { none: "Main alert role", disabled: !canEdit })),
         ], raidButton()),
         switchRow("honeypot", "Honeypot", "A trap channel. Anything posted there is removed, and a member who posted is acted on.", draft.honeypot.enabled, (value) => edit(() => { draft.honeypot.enabled = value; }, true), [
           field("Honeypot channel", channelPicker(draft.honeypot.channel, (value) => edit(() => { draft.honeypot.channel = value; }), { disabled: !canEdit })),

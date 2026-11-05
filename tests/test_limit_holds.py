@@ -17,11 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_web_guards
 import test_bot_commands
 import test_limits_and_links as limits
-from altwarden import altmatch, engine, health, notices, service as service_module, settings
+from altwarden import altmatch, catalog, engine, health, notices, service as service_module, settings
 from altwarden.bot import client as client_module
 from altwarden.netintel import NetInfo
 from altwarden.ports import DISCORD_BUSY, GuildView, MemberInfo
-from fakes import GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE
+from fakes import CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE
 from test_client import fake_interaction
 from test_member_states import LIMIT_ROLE
 
@@ -608,6 +608,140 @@ class ImportInTheBackground(test_bot_commands.Commands):
         await self.command("import-members")(interaction, self.role())
         await self.settled()
         self.assertEqual(await self.db.scalar("SELECT status FROM members WHERE guild_id = ? AND user_id = ?", (GUILD, OLD_USER)), "verified")
+
+
+ALERT_ROLE_ID = "970000000000000901"
+OTHER_ROLE_ID = "970000000000000902"
+
+
+class OneAlertRole(limits.Limited):
+    async def set_up_logs(self, **alerts):
+        def change(document):
+            document["core"]["logs"].update(enabled=True, modules={name: LOG_CHANNEL for name in catalog.LOG_MODULES})
+            document["core"]["alerts"].update(alerts)
+        await self.edit(change)
+
+    async def pings(self, *modules, **options):
+        rules = await self.service.get_settings(GUILD)
+        self.port.sent.clear()
+        await self.service._log(GUILD, rules, list(modules), {"title": "x"}, **options)
+        return self.port.sent[-1][1].mention_roles
+
+    async def test_alerts_start_on_with_nothing_to_choose_but_the_role(self):
+        alerts = settings.defaults()["core"]["alerts"]
+        self.assertEqual(alerts, {"enabled": True, "role": None, "off": [], "roles": {}})
+
+    async def test_the_role_covers_what_stops_someone(self):
+        await self.set_up_logs(role=ALERT_ROLE_ID)
+        for module in (*catalog.CHECK_IDS, "honeypot"):
+            self.assertEqual(await self.pings(module), [ALERT_ROLE_ID], module)
+
+    async def test_routine_logs_stay_quiet(self):
+        await self.set_up_logs(role=ALERT_ROLE_ID)
+        for module in ("success", "general", "settings", "auto_kick", "help_desk"):
+            self.assertEqual(await self.pings(module), [], module)
+
+    async def test_no_role_pings_nobody(self):
+        await self.set_up_logs()
+        self.assertEqual(await self.pings("alt_account"), [])
+
+    async def test_one_can_be_turned_off(self):
+        await self.set_up_logs(role=ALERT_ROLE_ID, off=["vpn"])
+        self.assertEqual(await self.pings("vpn"), [])
+        self.assertEqual(await self.pings("alt_account"), [ALERT_ROLE_ID])
+
+    async def test_one_can_have_its_own_role_and_a_routine_one_can_join(self):
+        await self.set_up_logs(role=ALERT_ROLE_ID, roles={"vpn": OTHER_ROLE_ID, "success": OTHER_ROLE_ID})
+        self.assertEqual(await self.pings("vpn"), [OTHER_ROLE_ID])
+        self.assertEqual(await self.pings("success"), [OTHER_ROLE_ID])
+
+    async def test_the_switch_stops_every_ping(self):
+        await self.set_up_logs(role=ALERT_ROLE_ID, enabled=False)
+        self.assertEqual(await self.pings("alt_account"), [])
+
+    async def test_a_raid_pings_the_main_role_unless_it_has_its_own(self):
+        await self.set_up_logs(role=ALERT_ROLE_ID)
+        self.assertEqual(await self.pings("raid", "general"), [ALERT_ROLE_ID])
+        self.assertEqual(await self.pings("raid", "general", alert_role=OTHER_ROLE_ID), [OTHER_ROLE_ID])
+
+    async def test_an_appeal_pings_the_main_role_unless_it_has_its_own(self):
+        await self.button_mode(attempts=2, reset_minutes=0)
+        await self.set_up_logs(role=ALERT_ROLE_ID)
+        await self.edit(lambda document: document["appeals"].update(enabled=True, channel=LOG_CHANNEL))
+        await self.fail_on_button(2)
+        self.port.sent.clear()
+        self.assertIsNone(await self.service.submit_appeal(GUILD, OLD_USER, "someone", "this wasn't me at all"))
+        self.assertEqual(self.port.sent[-1][1].mention_roles, [ALERT_ROLE_ID])
+
+    async def test_an_appeals_own_role_wins(self):
+        await self.button_mode(attempts=2, reset_minutes=0)
+        await self.set_up_logs(role=ALERT_ROLE_ID)
+        await self.edit(lambda document: document["appeals"].update(enabled=True, channel=LOG_CHANNEL, role=OTHER_ROLE_ID))
+        await self.fail_on_button(2)
+        self.port.sent.clear()
+        self.assertIsNone(await self.service.submit_appeal(GUILD, OLD_USER, "someone", "this wasn't me at all"))
+        self.assertEqual(self.port.sent[-1][1].mention_roles, [OTHER_ROLE_ID])
+
+
+class AlertsSavedBefore(unittest.TestCase):
+    def alerts(self, saved):
+        document = settings.defaults()
+        document["core"]["alerts"] = saved
+        return settings.normalize(document)["core"]["alerts"]
+
+    def test_one_role_on_many_rows_becomes_the_main_role(self):
+        saved = {"enabled": True, "roles": {"vpn": ALERT_ROLE_ID, "alt_account": ALERT_ROLE_ID}}
+        alerts = self.alerts(saved)
+        self.assertEqual((alerts["role"], alerts["roles"]), (ALERT_ROLE_ID, {}))
+        self.assertNotIn("vpn", alerts["off"])
+        self.assertIn("avatar", alerts["off"], "what pinged nobody before still pings nobody")
+
+    def test_a_different_role_on_one_row_stays_on_that_row(self):
+        alerts = self.alerts({"enabled": True, "roles": {"vpn": ALERT_ROLE_ID, "mfa": ALERT_ROLE_ID, "avatar": OTHER_ROLE_ID}})
+        self.assertEqual((alerts["role"], alerts["roles"]), (ALERT_ROLE_ID, {"avatar": OTHER_ROLE_ID}))
+
+    def test_no_roles_at_all_leaves_everything_ready_for_one(self):
+        self.assertEqual(self.alerts({"enabled": True, "roles": {}}), {"enabled": True, "role": None, "off": [], "roles": {}})
+
+    def test_saving_again_changes_nothing(self):
+        once = self.alerts({"enabled": True, "roles": {"vpn": ALERT_ROLE_ID, "avatar": OTHER_ROLE_ID, "mfa": ALERT_ROLE_ID}})
+        self.assertEqual(self.alerts(once), once)
+
+    def test_the_role_stays_behind_in_an_export(self):
+        document = settings.defaults()
+        document["core"]["alerts"].update(role=ALERT_ROLE_ID, off=["vpn"])
+        merged = settings.import_code(settings.defaults(), settings.export_code(document))
+        self.assertIsNone(merged["core"]["alerts"]["role"])
+        self.assertEqual(merged["core"]["alerts"]["off"], ["vpn"])
+
+
+class SetupWithLogsAndAlerts(test_web_guards.Base):
+    async def set_up(self, **extra):
+        await self.db.run("UPDATE guilds SET setup_done = 0")
+        return await self.send("POST", "/setup", {"verified_role": VERIFIED_ROLE, "channel": CHANNEL, **extra})
+
+    async def test_both_are_optional(self):
+        await self.log_in()
+        before = (await self.service.get_settings(GUILD))["core"]
+        status, _ = await self.set_up()
+        self.assertEqual(status, 200)
+        after = (await self.service.get_settings(GUILD))["core"]
+        self.assertEqual((after["logs"], after["alerts"]), (before["logs"], before["alerts"]))
+
+    async def test_one_channel_takes_every_log_and_the_role_takes_the_alerts(self):
+        await self.log_in()
+        status, _ = await self.set_up(log_channel=LOG_CHANNEL, alert_role=UNVERIFIED_ROLE)
+        self.assertEqual(status, 200)
+        core = (await self.service.get_settings(GUILD))["core"]
+        self.assertTrue(core["logs"]["enabled"])
+        self.assertEqual(set(core["logs"]["modules"].values()), {LOG_CHANNEL})
+        self.assertEqual(len(core["logs"]["modules"]), len(catalog.LOG_MODULES))
+        self.assertEqual(core["alerts"]["role"], UNVERIFIED_ROLE)
+
+    async def test_a_channel_from_elsewhere_is_refused(self):
+        await self.log_in()
+        status, _ = await self.set_up(log_channel="980000000000000001")
+        self.assertEqual(status, 400)
 
 
 class NoLimitOnHealth(test_bot_commands.Commands):

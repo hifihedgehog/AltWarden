@@ -184,7 +184,7 @@ def report(guild, settings: dict, *, verify_post=POST_UNKNOWN) -> dict:
     if settings["checks"]["max_attempts"]["role"]:
         _check_role(guild, "Attempt limit role", settings["checks"]["max_attempts"]["role"], issues, ok)
     if core["alerts"]["enabled"]:
-        for role_id in dict.fromkeys(core["alerts"]["roles"].values()):
+        for role_id in dict.fromkeys(role for role in (core["alerts"]["role"], *core["alerts"]["roles"].values()) if role):
             _check_role(guild, "Alert role", role_id, issues, ok, must_mention=True)
     _check_channel(guild, "Verification channel", core["channel"], issues, ok)
     if verify_post is None:
@@ -242,6 +242,9 @@ async def full_report(service, guild_id: str, guild, settings: dict) -> dict:
     elif not service.net.ready and settings["core"]["mode"] == WEB:
         data["notices"].append({"title": "The network lists haven't loaded yet",
                                 "fix": "VPN and country checks can't run until they do. Members aren't stopped over this. AltWarden tries again every hour."})
+    alerts = settings["core"]["alerts"]
+    if alerts["enabled"] and settings["core"]["logs"]["enabled"] and not alerts["role"] and not alerts["roles"]:
+        data["notices"].append({"title": "Alerts have no role to ping", "fix": "Pick a role under Alerts on the Rules page."})
     never = [row["name"] for row in lists if row["age_days"] is None or not row["rows"]]
     old = [row["name"] for row in lists if row["name"] not in never and row["age_days"] > REFRESH_SECONDS / 86400]
     if old:
@@ -287,7 +290,7 @@ def channel_refusals(guild, before: dict | None, after: dict) -> list[dict]:
 def _pinged_roles(settings: dict) -> list[tuple[str, str, str]]:
     """Roles AltWarden pings or exempts, with a label and the setting that holds each one. It hands none of them out."""
     core = settings["core"]
-    return [*(("Alert role", role_id, "core") for role_id in core["alerts"]["roles"].values()),
+    return [("Alert role", core["alerts"]["role"], "core"), *(("Alert role", role_id, "core") for role_id in core["alerts"]["roles"].values()),
             ("Support role", core["help_desk"]["support_role"], "core"),
             ("Raid alert role", settings["raid"]["alert_role"], "raid"),
             ("Appeals role", settings["appeals"]["role"], "appeals"),

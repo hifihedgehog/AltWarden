@@ -13,23 +13,34 @@ import json
 import re
 import unicodedata
 import zlib
+from collections import Counter
 from functools import cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .catalog import (ACTIONS, BAN, BY_ID, CHECK_IDS, DEFAULT_PRESET, DENY, HONEYPOT_ACTIONS, KICK, LOG_MODULES,
+from .catalog import (ACTIONS, BAN, BY_ID, CHECK_IDS, DEFAULT_PRESET, DENY, HONEYPOT_ACTIONS, IMPORTANT_ALERTS, KICK, LOG_MODULES,
                       MODES, PRESETS, WATCH, WEB)
 
 SCHEMA_VERSION = 1
 CONFIDENCE_LEVELS = ("possible", "likely", "confirmed")
 MAIN_ACTIONS = (WATCH, KICK, BAN)
 MIN_RESET_MINUTES = 5
+def alert_role(document: dict, module: str) -> str | None:
+    """The role a module's alert pings: its own if it has one, or the main role for the modules that use it."""
+    alerts = document["core"]["alerts"]
+    if not alerts["enabled"]:
+        return None
+    if module in alerts["roles"]:
+        return alerts["roles"][module]
+    return alerts["role"] if module in IMPORTANT_ALERTS and module not in alerts["off"] else None
+
+
 MAX_EXPORT_BYTES = 64 * 1024
 REVISION_SECTIONS = {"rules": None, "access": ("permissions",), "look": ("messages", "appearance")}
 OTHER_SECTIONS = ("permissions", "messages", "appearance")
 COUNTRIES = Path(__file__).resolve().parent / "web" / "static" / "countries.json"
-IMPORTED_SWITCHES = {"logs": ("enabled",), "alerts": ("enabled",),
+IMPORTED_SWITCHES = {"logs": ("enabled",), "alerts": ("enabled", "off"),
                      "help_desk": ("enabled", "require_attempt", "redirect", "auto_close", "member_close")}
 
 DEFAULT_MESSAGES = {
@@ -259,7 +270,7 @@ def defaults() -> dict:
             "external_vpn_lookup": False,
             "direct_signin": False,
             "logs": {"enabled": False, "modules": {}},
-            "alerts": {"enabled": False, "roles": {}},
+            "alerts": {"enabled": True, "role": None, "off": [], "roles": {}},
             "help_desk": {"enabled": False, "support_role": None, "require_attempt": True, "redirect": False,
                           "auto_close": False, "member_close": False},
         },
@@ -447,8 +458,15 @@ def normalize(raw: Any) -> dict:
                    "modules": {name: channel for name in LOG_MODULES if (channel := _snowflake(modules.get(name)))}}
     alerts = core_in.get("alerts") if isinstance(core_in.get("alerts"), dict) else {}
     roles = alerts.get("roles") if isinstance(alerts.get("roles"), dict) else {}
-    out["alerts"] = {"enabled": _bool(alerts.get("enabled"), False),
-                     "roles": {name: role for name in LOG_MODULES if (role := _snowflake(roles.get(name)))}}
+    roles = {name: role for name in LOG_MODULES if (role := _snowflake(roles.get(name)))}
+    main = _snowflake(alerts.get("role"))
+    off = alerts.get("off") if isinstance(alerts.get("off"), list) else []
+    if "role" not in alerts and roles:
+        # Saved before there was one role for everything. The role most modules use becomes it, and what pinged nobody still pings nobody.
+        main = Counter(roles.values()).most_common(1)[0][0]
+        off = [name for name in IMPORTANT_ALERTS if name not in roles]
+        roles = {name: role for name, role in roles.items() if role != main or name not in IMPORTANT_ALERTS}
+    out["alerts"] = {"enabled": _bool(alerts.get("enabled"), True), "role": main, "off": [name for name in IMPORTANT_ALERTS if name in off], "roles": roles}
     desk = core_in.get("help_desk") if isinstance(core_in.get("help_desk"), dict) else {}
     out["help_desk"] = {
         "enabled": _bool(desk.get("enabled"), False),
@@ -600,7 +618,7 @@ def _strip_server_specific(settings: dict) -> dict:
     for key in ("verified_role", "channel", "unverified_role"):
         core[key] = None
     core["logs"]["modules"] = {}
-    core["alerts"]["roles"] = {}
+    core["alerts"].update(role=None, roles={})
     core["help_desk"]["support_role"] = None
     export["checks"]["max_attempts"]["role"] = None
     export["honeypot"]["channel"] = None

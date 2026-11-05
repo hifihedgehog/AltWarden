@@ -556,7 +556,7 @@ async def walk_every_control(cdp, service, port) -> None:
     results["logs dialog saved"] = await save_bar(cdp)
     saved = await service.get_settings(GUILD)
     results["one channel for every log category"] = set(saved["core"]["logs"]["modules"].values()) == {LOG_CHANNEL} and all(check in saved["core"]["logs"]["modules"] for check in catalog_checks)
-    await click_text(cdp, "#item-alerts button", "Choose roles")
+    await click_text(cdp, "#item-alerts button", "Customize")
     await cdp.until("document.querySelector('.dialog select')")
     await cdp.evaluate(f"""(() => {{
         const box = document.querySelector('.dialog select');
@@ -1751,7 +1751,7 @@ async def the_alt_rule_warns_when_its_evidence_cant_reach_its_floor(s):
 async def alerts_offer_only_what_pings_there(s):
     await s.someone_else_changes(lambda doc: (doc["core"]["logs"]["modules"].update(raid=LOG_CHANNEL, appeals=LOG_CHANNEL, honeypot=LOG_CHANNEL), doc["core"]["alerts"].update(enabled=True, roles={"raid": VERIFIED_ROLE})))
     await s.open()
-    await s.click("#item-alerts button", "Choose roles")
+    await s.click("#item-alerts button", "Customize")
     await s.need("alerts opened", "document.querySelector('.dialog select')")
     names = await s.ev("[...document.querySelectorAll('.dialog .field > span:first-child')].map((node) => node.textContent)")
     s.check("Raid and Appeals have their own role settings", "Raid alerts" not in names and "Appeals" not in names, names)

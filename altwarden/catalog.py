@@ -76,6 +76,8 @@ EXTRA_LOG_MODULES = {
     "settings": "Settings changes",
 }
 LOG_MODULES = tuple(EXTRA_LOG_MODULES) + CHECK_IDS
+# What the one alert role is for: someone was stopped, or staff are needed. Routine logs don't ping anyone unless a server asks.
+IMPORTANT_ALERTS = ("honeypot", "raid", "appeals") + CHECK_IDS
 
 # Each preset sets every check it lists, with every option, so the result never depends on the preset
 # before it. A row that's off still stores Deny, so switching it on later starts at Deny. Two-factor login,

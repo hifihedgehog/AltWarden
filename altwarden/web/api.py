@@ -230,6 +230,7 @@ async def catalog_view(request: web.Request) -> web.Response:
         "honeypot_actions": list(catalog.HONEYPOT_ACTIONS),
         "presets": catalog.PRESETS,  # the whole tables, so the Rules page can name the active preset the way detect_preset does
         "log_modules": [{"id": name, "name": catalog.EXTRA_LOG_MODULES.get(name) or catalog.BY_ID[name].name} for name in catalog.LOG_MODULES],
+        "important_alerts": list(catalog.IMPORTANT_ALERTS),
         "commands": list(settings_module.COMMAND_DEFAULTS),
         "pages": {page: list(levels) for page, levels in settings_module.PAGE_DEFAULTS.items()},
         "permissions": list(settings_module.PERMISSION_NAMES),
@@ -306,8 +307,12 @@ async def setup(request: web.Request) -> web.Response:
     if row and row["setup_done"]:
         return json_error(409, "This server is already set up. Change it on the Rules page.")
     body = await _body(request)
-    updated = settings_module.normalize({**document, "core": {**document["core"], "verified_role": body.get("verified_role"),
-                                                              "channel": body.get("channel")}})
+    core = {**document["core"], "verified_role": body.get("verified_role"), "channel": body.get("channel")}
+    if body.get("log_channel"):
+        core["logs"] = {"enabled": True, "modules": {name: body["log_channel"] for name in catalog.LOG_MODULES}}
+    if body.get("alert_role"):
+        core["alerts"] = {**core["alerts"], "role": body["alert_role"]}
+    updated = settings_module.normalize({**document, "core": core})
     found = settings_module.problems(updated)
     if found:
         return json_error(400, found[0])
@@ -317,7 +322,7 @@ async def setup(request: web.Request) -> web.Response:
     refused = health.role_refusals(guild, None, updated, viewer) + health.channel_refusals(guild, None, updated)
     if refused:
         return json_error(400, refused[0]["text"])
-    chosen = {"verified_role": updated["core"]["verified_role"], "channel": updated["core"]["channel"]}
+    chosen = {key: updated["core"][key] for key in ("verified_role", "channel", "logs", "alerts")}
     await service.edit_settings(_gid(request), lambda current: {**current, "core": {**current["core"], **chosen}}, section="rules",
                                 actor_id=session["user_id"], actor_name=session["username"], setup_done=True)
     posted = await request.app["post_message"](_gid(request), "verification")

@@ -311,13 +311,13 @@ export function select(options, value, onChange, { disabled = false, label = "",
 
 // `given` is for a role AltWarden hands out: Discord refuses a managed role, or one above AltWarden's own.
 // `managed` is for a rule that only names a role, which can be any of them.
-export function rolePicker(value, onChange, { none = "Pick a role", disabled = false, label = none, given = false, managed = false } = {}) {
+export function rolePicker(value, onChange, { none = "Pick a role", disabled = false, label = none, given = false, managed = false, extra = [] } = {}) {
   const top = state.guild.bot_top_role;
   const roles = state.guild.roles.filter((role) => role.id !== state.guild.id && (managed || !role.managed || role.id === value)).map((role) => {
     const above = given && top !== undefined && top !== null && role.position >= top;
     return { id: role.id, name: above ? `${role.name} (above AltWarden's role)` : role.name, disabled: above || (given && role.managed) };
   });
-  return select([{ id: "", name: none }, ...roles], value ?? "", onChange, { disabled, label, missing: (id) => `Deleted role (${id})` });
+  return select([{ id: "", name: none }, ...extra, ...roles], value ?? "", onChange, { disabled, label, missing: (id) => `Deleted role (${id})` });
 }
 
 // `mixed` says that the things this picker sets don't agree. Picking anything sets them all, including "none".
