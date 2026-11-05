@@ -563,7 +563,7 @@ class ChosenRoles(unittest.TestCase):
 
     def every_way(self, role_id):
         alerts = rules()
-        alerts["core"]["alerts"] = {"enabled": True, "roles": {"raid": role_id}}
+        alerts["core"]["alerts"] = {"enabled": True, "role": None, "off": [], "roles": {"raid": role_id}}
         desk = rules()
         desk["core"]["help_desk"].update(enabled=True, support_role=role_id)
         return {"alert": alerts, "raid": rules(raid={"alert_role": role_id}), "appeals": rules(appeals={"role": role_id}), "support": desk,
@@ -654,8 +654,13 @@ class WhatTheServiceKnows(unittest.IsolatedAsyncioTestCase):
     def fine(self, name="tor"):
         return {"name": name, "age_days": 1.0, "rows": 100}
 
-    async def report(self, service):
-        return await health.full_report(service, fakes.GUILD, server(), rules())
+    async def report(self, service, *, alert_role=fakes.VERIFIED_ROLE):
+        document = rules()
+        document["core"]["alerts"]["role"] = alert_role
+        return await health.full_report(service, fakes.GUILD, server(), document)
+
+    async def test_alerts_with_no_role_are_a_notice(self):
+        self.assertIn("Alerts have no role to ping", self.titled(await self.report(self.service(lists=[self.fine()]), alert_role=None)))
 
     def titled(self, report):
         return [notice["title"] for notice in report["notices"]]

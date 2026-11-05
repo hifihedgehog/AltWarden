@@ -873,7 +873,7 @@ class StaffLogs(Prepared):
     async def alerts(self, **roles):
         def change(doc):
             doc["core"]["logs"] = {"enabled": True, "modules": {name: LOG_CHANNEL for name in ("general", "success", "vpn", "auto_kick", "help_desk", "honeypot", "raid", "settings", "account_age", "avatar")}}
-            doc["core"]["alerts"] = {"enabled": True, "roles": roles}
+            doc["core"]["alerts"] = {"enabled": True, "role": None, "off": [], "roles": roles}
         await self.edit(change)
 
     def pinged(self, role=ALERT_ROLE):
