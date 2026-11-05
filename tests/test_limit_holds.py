@@ -1,4 +1,4 @@
-"""Held limits, lookups, imports, and the small promises that pages and commands make."""
+"""Lookups, imports, alerts, and the small promises that pages and commands make."""
 import asyncio
 import json
 import os
@@ -26,75 +26,6 @@ from test_client import fake_interaction
 from test_member_states import LIMIT_ROLE
 
 STATIC = Path(__file__).resolve().parent.parent / "altwarden" / "web" / "static"
-
-
-class HeldLimit(limits.Limited):
-    """Attempts spent only on an unproven link can't end in a removal, from that link or from a clean device afterward."""
-
-    async def spent_on_a_link(self, action, *, reset_minutes=0):
-        await self.turn_on_alts()
-        await self.edit(lambda document: document["checks"]["max_attempts"].update(enabled=True, action=action, attempts=2, reset_minutes=reset_minutes, role=LIMIT_ROLE))
-        first = await self.signed_in(OTHER_USER)
-        self.assertEqual((await self.submit_directly(first, device=None)).status, "verified")
-        token = await self.signed_in(OLD_USER)
-        for _ in range(2):
-            await self.submit_directly(token, device=None)
-        self.assertEqual((await self.row())["limit_held"], 1)
-        return token
-
-    async def test_a_clean_device_afterward_isnt_removed(self):
-        for action in ("kick", "ban"):
-            with self.subTest(action):
-                await self.db.run("DELETE FROM members")
-                await self.db.run("DELETE FROM identifiers")
-                await self.db.run("DELETE FROM sessions")
-                self.port.calls.clear()
-                token = await self.spent_on_a_link(action)
-                result = await self.submit_directly(token, device=None, ip=limits.ELSEWHERE, report=limits.other_machine())
-                self.assertEqual((result.status, result.reason, result.action), ("failed", "max_attempts", "deny"))
-                self.assertEqual(self.port.did("kick") + self.port.did("ban"), [])
-
-    async def test_something_else_wrong_lets_the_limit_act(self):
-        token = await self.spent_on_a_link("kick")
-        await self.edit(lambda document: document["checks"]["avatar"].update(enabled=True, action="deny"))
-        self.discord.user["avatar"] = None
-        await self.sign_in(token, user=OLD_USER)
-        result = await self.submit_directly(token, device=None, ip=limits.ELSEWHERE, report=limits.other_machine())
-        self.assertEqual(result.action, "kick")
-        self.assertEqual(len(self.port.did("kick")), 1)
-
-    async def test_a_limit_never_held_still_removes(self):
-        await self.edit(lambda document: (document["checks"]["avatar"].update(enabled=True, action="deny"), document["checks"]["max_attempts"].update(enabled=True, action="kick", attempts=2, reset_minutes=0)))
-        await self.db.touch_member(GUILD, OLD_USER)
-        await self.db.update_member(GUILD, OLD_USER, fails=2, limit_reached_at=time.time())
-        token = await self.signed_in(OLD_USER)
-        result = await self.submit_directly(token, device=None)
-        self.assertEqual(result.action, "kick")
-
-    async def test_a_limit_reached_on_something_else_isnt_held(self):
-        await self.edit(lambda document: (document["checks"]["avatar"].update(enabled=True, action="deny"), document["checks"]["max_attempts"].update(enabled=True, action="kick", attempts=2, reset_minutes=0)))
-        self.discord.user["avatar"] = None
-        for _ in range(2):
-            await self.submit_directly(await self.signed_in(OLD_USER), device=None)
-        row = await self.row()
-        self.assertIsNotNone(row["limit_reached_at"])
-        self.assertEqual(row["limit_held"], 0)
-        self.assertEqual(len(self.port.did("kick")), 1)
-
-    async def test_attempts_coming_back_end_the_hold(self):
-        await self.spent_on_a_link("kick", reset_minutes=60)
-        await self.db.update_member(GUILD, OLD_USER, limit_reached_at=time.time() - 3601)
-        await self.service.tick()
-        row = await self.row()
-        self.assertEqual((row["limit_held"], row["limit_reached_at"], row["fails"]), (0, None, 0))
-
-    async def test_a_reset_and_a_pass_end_the_hold(self):
-        await self.spent_on_a_link("kick")
-        await self.service.reset_member(GUILD, OLD_USER, STAFF, "staff")
-        self.assertEqual((await self.row())["limit_held"], 0)
-        await self.db.update_member(GUILD, OLD_USER, limit_held=1)
-        await self.db.mark_verified(GUILD, OLD_USER, "staff")
-        self.assertEqual((await self.row())["limit_held"], 0)
 
 
 class LookupCharges(limits.Limited):
@@ -185,8 +116,8 @@ class BannedLinkFloor(unittest.TestCase):
 
 
 class BanLookups(limits.Limited):
-    async def asked_for(self, *links):
-        alt = (await self.service.get_settings(GUILD))["checks"]["alt_account"]
+    async def asked_for(self, *links, floor="confirmed"):
+        alt = {**(await self.service.get_settings(GUILD))["checks"]["alt_account"], "min_confidence": floor}
         before = len(self.port.calls)
         self.port.is_banned = AsyncMock(return_value=False)
         with patch.object(altmatch, "find_links", AsyncMock(return_value=list(links))):
@@ -200,7 +131,7 @@ class BanLookups(limits.Limited):
 
     async def test_links_that_already_count_are_all_asked_about(self):
         links = [altmatch.Link(str(170000000000000000 + number), 80, "likely", ["fingerprint", "ip"], verified=True) for number in range(10)]
-        self.assertEqual(await self.asked_for(*links), 10)
+        self.assertEqual(await self.asked_for(*links, floor="likely"), 10)
 
 
 class CooldownPastALimit(unittest.TestCase):
@@ -215,9 +146,6 @@ class CooldownPastALimit(unittest.TestCase):
         decision = self.decide(fails=2, limit_reached_at=time.time())
         self.assertEqual(decision.cooldown_left, 0)
         self.assertEqual(decision.primary.check_id, "max_attempts")
-
-    def test_a_held_kick_limit_counts_too(self):
-        self.assertEqual(self.decide(fails=2, limit_reached_at=time.time(), limit_held=1, action="kick").cooldown_left, 0)
 
     def test_short_of_the_limit_the_cooldown_stands(self):
         self.assertGreater(self.decide(fails=1).cooldown_left, 0)

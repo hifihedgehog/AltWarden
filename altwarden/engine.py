@@ -84,12 +84,6 @@ class Decision:
         return not self.enforced and self.cooldown_left <= 0
 
     @property
-    def only_unproven_link(self) -> bool:
-        """Whether a link below confirmed is the one thing this attempt failed, leaving the attempt limit aside. Such a link can be planted."""
-        others = [finding for finding in self.enforced if finding.check_id != "max_attempts"]
-        return len(others) == 1 and others[0].check_id == "alt_account" and others[0].detail.get("confidence") != "confirmed"
-
-    @property
     def primary(self) -> Finding | None:
         """The failure that decides the outcome: the strongest action, then the check order."""
         enforced = self.enforced
@@ -185,7 +179,7 @@ def run_checks(attempt: Attempt, regions: dict | None = None) -> Decision:
     limit = _active(attempt, "max_attempts")
     used_up = limit is not None and member.get("fails", 0) >= limit["attempts"]
     # Past a used-up limit that only denies, "try again in a minute" would be a false promise.
-    final = used_up and member.get("limit_reached_at") and (limit["action"] == DENY or member.get("limit_held"))
+    final = used_up and member.get("limit_reached_at") and limit["action"] == DENY
     cooldown = settings["core"]["cooldown"]
     if cooldown["enabled"] and "cooldown" not in attempt.bypass and member.get("last_fail_at") and not final:
         left = member["last_fail_at"] + cooldown["seconds"] - attempt.now
@@ -238,13 +232,6 @@ def run_checks(attempt: Attempt, regions: dict | None = None) -> Decision:
                 detail={"bot_score": browser.bot_score, "suspect_score": attempt.suspect, "signs": attempt.suspect_hits})
         _simple(attempt, decision, "vm", browser.vm, detail={"signs": reasons.get("vm", [])})
         _simple(attempt, decision, "rooted", browser.emulated, detail={"signs": reasons.get("emulated", [])})
-    others = [finding for finding in decision.enforced if finding.check_id != "max_attempts"]
-    if decision.only_unproven_link or (member.get("limit_held") and not others):
-        # A planted fingerprint mustn't reach a kick through the limit. The hold lasts once those attempts are spent, or the member
-        # would be removed for trying from a clean device. Anything else wrong on the attempt lets the limit act.
-        for finding in decision.findings:
-            if finding.check_id == "max_attempts" and finding.enforced:
-                finding.action = DENY
     return decision
 
 
@@ -262,16 +249,16 @@ def _check_alt(attempt: Attempt, decision: Decision) -> None:
         return
     counted = altmatch.counting(attempt.links, check["min_confidence"])
     if counted:
-        judged = [(link, *altmatch.judge(check, link.confidence, link.banned, link.other_is_main)) for link in counted]
-        link, action, other, capped = max(judged, key=lambda entry: (SEVERITY[entry[1]], SEVERITY[entry[2]], entry[0].banned, entry[0].score))
+        judged = [(link, *altmatch.judge(check, link.banned, link.other_is_main)) for link in counted]
+        link, action, other = max(judged, key=lambda entry: (SEVERITY[entry[1]], SEVERITY[entry[2]], entry[0].banned, entry[0].score))
     else:
         nearby = [link for link in altmatch.counting(attempt.links, "possible") if not altmatch.looks_alike_only(link)]
         if not nearby:
             return
-        link, action, other, capped = max(nearby, key=lambda entry: (entry.banned, entry.score)), WATCH, WATCH, False
+        link, action, other = max(nearby, key=lambda entry: (entry.banned, entry.score)), WATCH, WATCH
     decision.alt_link = link
     decision.main_action = other
-    decision.findings.append(Finding("alt_account", action, "alt_account", {**link.as_dict(), **({"capped": True} if capped else {})}))
+    decision.findings.append(Finding("alt_account", action, "alt_account", link.as_dict()))
 
 
 def _check_geogate(attempt: Attempt, decision: Decision, net: NetInfo, regions: dict) -> None:

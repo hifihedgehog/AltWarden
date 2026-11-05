@@ -75,7 +75,7 @@ class EvidenceScore(DatabaseCase):
     async def test_a_second_browser_on_one_pc_and_connection_is_likely(self):
         await self.seed("10", ip="i", device="d")
         link = (await self.links({"ip": "i", "device": "d"}))[0]
-        self.assertEqual((link.score, link.confidence), (70, "likely"))
+        self.assertEqual((link.score, link.confidence), (99, "likely"))
 
     async def test_one_kind_of_machine_from_another_address_stays_weak(self):
         await self.seed("10", ip="other", device="d")
@@ -84,8 +84,7 @@ class EvidenceScore(DatabaseCase):
     async def test_the_pair_bonus_skips_a_weak_address_and_a_weak_fingerprint(self):
         await self.seed("10", ip="i", device="d")
         self.assertEqual((await self.links({"ip": "i", "device": "d"}, weak_ip=True))[0].score, 30)
-        self.assertEqual((await self.links({"ip": "i", "device": "d"}, weak_fingerprint=True))[0].score, 55)
-
+        self.assertEqual((await self.links({"ip": "i", "device": "d"}, weak_fingerprint=True))[0].score, 90)
 
 class AltJudgment(unittest.TestCase):
     def link(self, other, score, confidence, methods, **options):
@@ -113,23 +112,20 @@ class AltJudgment(unittest.TestCase):
         decision = engine.run_checks(attempt(alt_rules(), links=[stronger, plain]))
         self.assertEqual(decision.alt_link.other_id, "1")
 
-    def test_a_link_below_confirmed_stops_at_deny_and_says_so(self):
+    def test_a_link_below_confirmed_gets_the_chosen_actions(self):
         likely = self.link("1", 80, "likely", ["fingerprint", "ip"])
-        decision = engine.run_checks(attempt(alt_rules(main_action="ban"), links=[likely]))
-        self.assertEqual((decision.action, decision.main_action), ("deny", "watch"))
-        self.assertIs(decision.primary.detail["capped"], True)
+        decision = engine.run_checks(attempt(alt_rules(alt_action="kick", main_action="ban"), links=[likely]))
+        self.assertEqual((decision.action, decision.main_action), ("kick", "ban"))
 
-    def test_a_banned_account_below_confirmed_stops_at_deny(self):
+    def test_a_banned_account_below_confirmed_gets_the_banned_action(self):
         likely = self.link("1", 80, "likely", ["fingerprint", "ip"], banned=True)
-        decision = engine.run_checks(attempt(alt_rules(), links=[likely]))
-        self.assertEqual(decision.action, "deny")
-        self.assertIs(decision.primary.detail["capped"], True)
+        decision = engine.run_checks(attempt(alt_rules(banned_alt_action="ban"), links=[likely]))
+        self.assertEqual(decision.action, "ban")
 
-    def test_the_earlier_account_verifying_below_confirmed_is_only_watched(self):
+    def test_the_earlier_account_verifying_gets_the_main_action(self):
         likely = self.link("1", 80, "likely", ["fingerprint", "ip"], other_is_main=False)
         decision = engine.run_checks(attempt(alt_rules(main_action="kick"), links=[likely]))
-        self.assertTrue(decision.passed)
-        self.assertIs(decision.findings[0].detail["capped"], True)
+        self.assertEqual(decision.action, "kick")
 
     def test_a_confirmed_link_keeps_every_action_and_no_note(self):
         confirmed = self.link("1", 100, "confirmed", ["cookie"])
@@ -143,10 +139,10 @@ class AltJudgment(unittest.TestCase):
         self.assertTrue(decision.passed)
         self.assertNotIn("capped", decision.findings[0].detail)
 
-    def test_the_log_says_why_an_action_was_lowered(self):
+    def test_the_log_names_the_strength_of_the_match(self):
         likely = self.link("1", 80, "likely", ["fingerprint", "ip"])
         finding = engine.run_checks(attempt(alt_rules(), links=[likely])).primary
-        self.assertIn("confirmed", notices._detail_text(finding))
+        self.assertEqual(notices._detail_text(finding), "Likely match, score 80")
 
     def test_a_link_under_the_floor_is_watched_and_recorded(self):
         possible = self.link("1", 55, "possible", ["ip", "device"])
@@ -185,9 +181,9 @@ PRESET_TABLE = {
     "account_age":      ((False, "deny", {"days": 7}), (True, "deny", {"days": 7}), (True, "kick", {"days": 30})),
     "avatar":           ((False, "deny", {}), (False, "deny", {}), (True, "kick", {})),
     "disposable_email": ((True, "deny", {}), (True, "deny", {}), (True, "kick", {})),
-    "alt_account":      ((True, "deny", {"alt_action": "deny", "main_action": "watch", "banned_alt_action": "deny", "min_confidence": "likely"}),
-                         (True, "kick", {"alt_action": "kick", "main_action": "watch", "banned_alt_action": "ban", "min_confidence": "likely"}),
-                         (True, "ban", {"alt_action": "ban", "main_action": "kick", "banned_alt_action": "ban", "min_confidence": "likely"})),
+    "alt_account":      ((True, "deny", {"alt_action": "deny", "main_action": "watch", "banned_alt_action": "deny", "min_confidence": "possible"}),
+                         (True, "kick", {"alt_action": "kick", "main_action": "watch", "banned_alt_action": "ban", "min_confidence": "possible"}),
+                         (True, "ban", {"alt_action": "ban", "main_action": "kick", "banned_alt_action": "ban", "min_confidence": "possible"})),
     "max_attempts":     ((False, "deny", {"attempts": 5, "reset_minutes": 1440}), (True, "deny", {"attempts": 5, "reset_minutes": 1440}),
                          (True, "kick", {"attempts": 3, "reset_minutes": 0})),
     "vpn":              ((False, "deny", {}), (True, "deny", {}), (True, "kick", {})),
@@ -308,7 +304,7 @@ class Presets(unittest.TestCase):
 
     def test_the_blurbs_say_what_each_preset_does(self):
         self.assertEqual(catalog.PRESETS["gentle"]["blurb"], "Stops throwaway emails, fake browser identities and alt accounts. Everything else stays off. Two-factor login keeps its own setting.")
-        self.assertEqual(catalog.PRESETS["standard"]["blurb"], "Stops anyone who fails a check. Kicks fake browser identities, and alt accounts proven by the browser cookie.")
+        self.assertEqual(catalog.PRESETS["standard"]["blurb"], "Stops anyone who fails a check. Kicks fake browser identities and alt accounts.")
         self.assertEqual(catalog.PRESETS["strict"]["blurb"], "For servers under attack. Kicks or bans on most failures, and removes anyone who doesn't verify within 10 minutes.")
 
     def test_no_preset_uses_watch_except_for_the_earlier_account(self):
@@ -1408,10 +1404,10 @@ class PreviewAgreesWithTheEngine(unittest.TestCase):
     def replay(self, rules, finding, outcome="failed"):
         return analytics._replay([replay_row(finding, outcome)], rules, 30)
 
-    def test_a_replayed_link_below_confirmed_is_capped_like_a_real_one(self):
+    def test_a_replayed_link_acts_like_a_real_one(self):
         finding = {"check": "alt_account", "action": "kick", "detail": {"confidence": "likely", "score": 80, "methods": ["fingerprint", "ip"],
                                                                          "banned": False, "other_is_main": False}}
-        self.assertEqual(self.replay(alt_rules(main_action="kick"), finding, "passed")["blocked_now"], 0)
+        self.assertEqual(self.replay(alt_rules(main_action="kick"), finding, "passed")["blocked_now"], 1)
 
     def test_every_evidence_switch_off_means_the_link_doesnt_fire(self):
         finding = {"check": "alt_account", "action": "kick", "detail": {"confidence": "confirmed", "score": 100, "methods": ["cookie"], "banned": False, "other_is_main": True}}

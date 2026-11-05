@@ -237,7 +237,7 @@ def _check_defaults() -> dict:
     checks["account_age"]["days"] = 7
     checks["alt_account"].update({
         "methods": {"cookie": True, "fingerprint": True, "ip": True},
-        "min_confidence": "likely",
+        "min_confidence": "possible",
         "main_action": WATCH,
         "alt_action": DENY,
         "banned_alt_action": BAN,

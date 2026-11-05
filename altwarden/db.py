@@ -448,7 +448,7 @@ class Database:
             (guild_id, user_id, username or "", picture, time.time(), username, given, picture))
 
     async def update_member(self, guild_id: str, user_id: str, **fields: Any) -> None:
-        allowed = {"status", "method", "verified_at", "kick_at", "kick_warn_at", "fails", "last_fail_at", "limit_reached_at", "limit_held",
+        allowed = {"status", "method", "verified_at", "kick_at", "kick_warn_at", "fails", "last_fail_at", "limit_reached_at",
                    "help_thread_id", "joined_at", "forget_on_unban", "first_verified_at"}
         if not fields or not set(fields) <= allowed:
             raise ValueError(f"Unknown member fields: {set(fields) - allowed}")
@@ -460,7 +460,7 @@ class Database:
         """A member got in. The first time is kept for good, because it decides which of two linked accounts is the main one."""
         moment = when or time.time()
         await self.run("UPDATE members SET status = 'verified', method = ?, verified_at = ?, first_verified_at = COALESCE(first_verified_at, ?), kick_at = NULL, kick_warn_at = NULL, "
-                       "fails = 0, limit_reached_at = NULL, limit_held = 0 WHERE guild_id = ? AND user_id = ?", (method, moment, moment, guild_id, user_id))
+                       "fails = 0, limit_reached_at = NULL WHERE guild_id = ? AND user_id = ?", (method, moment, moment, guild_id, user_id))
 
     # --- identifiers ------------------------------------------------------------------------
 

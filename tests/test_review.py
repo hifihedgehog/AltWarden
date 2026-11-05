@@ -466,8 +466,7 @@ class EarlierAccounts(Base):
         for kind, value in (("fingerprint", "a" * 32), ("ip", "8.8.4.4")):
             await self.db.store_identifier(GUILD, OTHER_USER, kind, self.keys.digest(int(GUILD), kind, value), time.time() + 999)
         await self.change(alt_account={"enabled": True, "alt_action": "kick", "main_action": "watch"})
-        # A fingerprint and an address stop the alt, and only a confirmed link can remove it.
-        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "deny")
+        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "kick")
         link = await self.db.one("SELECT main_id, alt_id FROM links")
         self.assertEqual((link["main_id"], link["alt_id"]), (OTHER_USER, OLD_USER))
 
@@ -490,8 +489,7 @@ class EarlierAccounts(Base):
             await self.db.store_identifier(GUILD, OTHER_USER, kind, self.keys.digest(int(GUILD), kind, value), time.time() + 999)
         self.port.banned.add(OTHER_USER)
         await self.change(alt_account={"enabled": True, "alt_action": "watch", "banned_alt_action": "ban"})
-        # Without the cookie the ban stops at Deny. A Watch alt would have let them in, so this is the ban counting.
-        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "deny")
+        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "ban")
 
     async def test_the_first_account_stays_the_main_one_after_passing_again(self):
         await self.verified(OLD_USER, time.time() - 1000)
@@ -533,7 +531,7 @@ class EarlierAccounts(Base):
         self.port.banned.add(THIRD_USER)
         await self.change(alt_account={"enabled": True, "alt_action": "watch", "banned_alt_action": "ban"})
         result = await self.verify_through(ip="8.8.4.4")
-        self.assertEqual(result["action"], "deny")  # the stronger match is only watched, so this is the banned one, stopped at Deny without a cookie
+        self.assertEqual(result["action"], "ban")  # the stronger match is only watched, so this is the banned one
 
 
 class AltEvidence(unittest.IsolatedAsyncioTestCase):
@@ -557,9 +555,9 @@ class AltEvidence(unittest.IsolatedAsyncioTestCase):
         links = await altmatch.find_links(self.db, "1", "99", digests, methods=self.METHODS, weak_fingerprint=weak_fingerprint, weak_ip=weak_ip)
         return links[0] if links else None
 
-    async def test_two_phones_on_one_wifi_arent_acted_on(self):
+    async def test_two_phones_on_one_wifi_are_acted_on(self):
         link = await self.link(SAME_PHONE, weak_fingerprint=True)
-        self.assertEqual((link.score, link.confidence), (65, "possible"))
+        self.assertEqual(link.confidence, "likely")
 
     async def test_strangers_with_the_same_laptop_arent_acted_on(self):
         link = await self.link({"fingerprint": "f1", "device": "d1"})
@@ -567,8 +565,7 @@ class AltEvidence(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_same_setup_on_the_same_connection_is_acted_on(self):
         link = await self.link({"fingerprint": "f1", "ip": "i1"})
-        self.assertEqual((link.score, link.confidence), (80, "likely"))
-
+        self.assertEqual((link.score, link.confidence), (99, "likely"))
 
 class Looks(unittest.TestCase):
     def report_for(self, ua, platform, **nav):

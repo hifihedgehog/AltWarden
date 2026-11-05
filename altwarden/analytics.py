@@ -225,7 +225,7 @@ def _still_fires(finding: dict, check: dict) -> bool:
     if name == "account_age":
         return detail.get("account_days", 0) < check["days"]
     if name == "alt_account":
-        return RANK[_alt_confidence(detail, check)] >= RANK.get(check["min_confidence"], RANK["likely"])
+        return RANK[_alt_confidence(detail, check)] >= RANK.get(check["min_confidence"], RANK["possible"])
     if name == "max_attempts":
         return detail.get("attempts", 0) >= check["attempts"]  # it fired at that limit, so a higher one hasn't been reached for certain
     if name == "geogate":
@@ -251,5 +251,5 @@ def _action_for(finding: dict, check: dict) -> str:
         detail = finding.get("detail", {})
         # The account that verified first gets the main action, whichever of the two was verifying.
         other_is_main = not (detail.get("earlier_account") or detail.get("other_is_main") is False)
-        return altmatch.judge(check, _alt_confidence(detail, check), bool(detail.get("banned")), other_is_main)[0]
+        return altmatch.judge(check, bool(detail.get("banned")), other_is_main)[0]
     return check.get("action", WATCH)

@@ -4,16 +4,16 @@ import { openCountryPicker } from "/static/dash/geogate.js";
 import { api, ApiError, channelExists, channelPicker, clone, copyText, dialog, duration, field, fill, h, lookup, number, plural, pressed, roleExists, roleList, rolePicker, section, segments, select, state, toast, toggle } from "/static/dash/ui.js";
 
 const CONFIDENCE = [
-  { id: "possible", name: "Possible: a shared connection or a matching browser setup" },
-  { id: "likely", name: "Likely: the same browser setup, or the same kind of computer, on the same connection" },
-  { id: "confirmed", name: "Confirmed: the same browser, proven by its cookie" },
+  { id: "possible", name: "Any match" },
+  { id: "likely", name: "The same connection, or stronger" },
+  { id: "confirmed", name: "Only the same browser cookie" },
 ];
 // The strongest match each mix of evidence can reach, from the scores in altmatch.py. A test holds this table to them.
 const EVIDENCE_REACH = {
   "": "none",
   cookie: "confirmed",
   fingerprint: "possible",
-  ip: "possible",
+  ip: "likely",
   "cookie+fingerprint": "confirmed",
   "cookie+ip": "confirmed",
   "fingerprint+ip": "likely",
@@ -129,7 +129,6 @@ export async function render(view) {
       const name = (id) => id[0].toUpperCase() + id.slice(1);
       notes.push(`With this evidence, the strongest match is ${name(reach)}, so nothing reaches ${name(check.min_confidence)}. Those matches are only noted for staff, unless the other account is banned and the match scores 60 or more.`);
     }
-    if (reach !== "none" && !check.methods.cookie) notes.push("Without the browser cookie, no match reaches Confirmed, so Kick and Ban stop at Deny.");
     return notes.length ? h("div", { class: "notice warn field wide evidence-warning", text: notes.join(" ") }) : null;
   }
 
@@ -162,9 +161,9 @@ export async function render(view) {
             h("label", { class: "chip" }, h("input", { type: "checkbox", checked: methods[key], disabled: !canEdit, onchange: (event) => edit(() => { methods[key] = event.target.checked; }, true) }), label)))),
         field("Act when the match is at least", select(CONFIDENCE, check.min_confidence, (value) => edit(() => { check.min_confidence = value; }, true), { disabled: !canEdit })),
         evidenceWarning(check),
-        h("div", { class: "field" }, h("span", { text: "Alt of a member in good standing" }), actionControl(check, "alt_action"), help("Only a confirmed match removes anyone. A weaker one stops at Deny.")),
-        h("div", { class: "field" }, h("span", { text: "Alt of a banned account" }), actionControl(check, "banned_alt_action"), help("Only a confirmed match removes anyone. A weaker one stops at Deny.")),
-        h("div", { class: "field" }, h("span", { text: "The earlier account" }), actionControl(check, "main_action", state.catalog.actions.filter((action) => action.id !== "deny")), help("Only a confirmed match acts on this account. A weaker one leaves it on Watch.")),
+        h("div", { class: "field" }, h("span", { text: "Alt of a member in good standing" }), actionControl(check, "alt_action"), help("Applies to the newer account.")),
+        h("div", { class: "field" }, h("span", { text: "Alt of a banned account" }), actionControl(check, "banned_alt_action"), help("Applies when the earlier account is banned.")),
+        h("div", { class: "field" }, h("span", { text: "The earlier account" }), actionControl(check, "main_action", state.catalog.actions.filter((action) => action.id !== "deny")), help("Applies to the account that verified first.")),
       ];
     }
     if (id === "geogate") {

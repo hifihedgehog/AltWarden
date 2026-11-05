@@ -1,12 +1,12 @@
 """Decides whether a member is a second account of someone already in this server.
 
-One matching value doesn't prove much: a family shares an address, and machines of one model look
-alike to a browser. FingerprintJS itself rates its identifier as no better than a coin toss on
-Android and Safari. So each kind of evidence carries a weight, and staff see how strong the link is.
+Any one match on a connection, a browser cookie or a browser fingerprint makes the new account an alt
+of the earlier one, and the server's chosen action applies. Each kind of evidence carries a weight, so
+staff see how strong the link is:
 
     cookie       100  the same browser, using a cookie only this site can have set
     fingerprint   45  the same browser setup (10 on phones, tablets and Chromebooks, which look alike)
-    ip            35  the same connection (10 on mobile, VPN and carrier-shared addresses)
+    ip            70  the same connection (10 on VPN and carrier-shared addresses)
     device        20  the same kind of machine, seen across browsers
 
     confirmed   100 or more
@@ -14,24 +14,12 @@ Android and Safari. So each kind of evidence carries a weight, and staff see how
     possible     30 or more
 
 Only the cookie is signed by this server, so without it a score stops at 99 and the link can't be
-"confirmed". The client states its own fingerprint and device, so anyone on a victim's connection could
-copy them. A link below confirmed never removes anyone by itself: its own action stops at Deny, and an
-attempt limit reached or passed with nothing else wrong holds at Deny too. Auto Kick still removes whoever
-hasn't verified, because it's a clock and not evidence.
+"confirmed". The same kind of machine on the same connection adds 15, as long as neither is one of the
+weak kinds above.
 
-The same kind of machine on the same connection adds 15, as long as neither is one of the weak kinds
-above: a second browser on one PC at home scores 70, which is "likely". The same machine from another
-address still scores 20.
-
-A shared home connection alone scores 35, which is "possible", so by default it never blocks a
-sibling. A cookie alone, or a fingerprint plus a connection, is enough to act on. Two strangers with
-the same laptop on different networks score 65 and two phones on one Wi-Fi score 65, so neither is
-acted on by default. Two identical laptops in one home match on everything but the cookie, which stops
-at 99, so the second is stopped and has to appeal.
-
-A link to a banned account counts from 60 even when a server's floor is higher, so a ban evader who clears cookies and
-changes network is stopped by a fingerprint and a device (65). It stays below confirmed, so it ends in a Deny and an appeal.
-A connection alone (35) doesn't reach that, and every other link keeps the server's floor.
+The kind of machine alone, and evidence weak on this attempt, never make a match, because every phone of
+one model and every customer behind one carrier address look like that. A server can raise its floor
+above "possible" to act on less. A link to a banned account counts from 60 even then.
 
 Everything happens inside one server. Digests are keyed per server, so there is no way to compare
 across servers, and this module has no query that could.
@@ -43,7 +31,7 @@ from typing import Iterable
 
 from .catalog import DENY, SEVERITY, WATCH
 
-WEIGHTS = {"cookie": 100, "fingerprint": 45, "ip": 35, "device": 20}
+WEIGHTS = {"cookie": 100, "fingerprint": 45, "ip": 70, "device": 20}
 WEAK_WEIGHTS = {"fingerprint": 10, "ip": 10}
 PAIR_BONUS = 15
 SCORE_WITHOUT_COOKIE = 99
@@ -70,24 +58,13 @@ def score_for(kinds: Iterable[str], weak: Iterable[str] = ()) -> int:
     return score if "cookie" in kinds else min(score, SCORE_WITHOUT_COOKIE)
 
 
-def judge(check: dict, confidence: str | None, banned: bool, other_is_main: bool) -> tuple[str, str, bool]:
-    """What a link does: the action on this member, the action on the other account, and whether either was lowered.
-
-    A fingerprint and a device are whatever the client says, so a link below confirmed never removes anyone by itself.
-    """
+def judge(check: dict, banned: bool, other_is_main: bool) -> tuple[str, str]:
+    """What a link does: the action on this member, and the action on the other account."""
     if banned:
-        action, other = check["banned_alt_action"], WATCH
-    elif other_is_main:
-        action, other = check["alt_action"], check["main_action"]
-    else:
-        action, other = check["main_action"], WATCH  # this account verified first, so it's the main one
-    if confidence == "confirmed":
-        return action, other, False
-    if not banned and not other_is_main:
-        lowered = WATCH  # the action on the earlier account, who is the member verifying here
-    else:
-        lowered = DENY if SEVERITY[action] > SEVERITY[DENY] else action
-    return lowered, WATCH, lowered != action or other != WATCH
+        return check["banned_alt_action"], WATCH
+    if other_is_main:
+        return check["alt_action"], check["main_action"]
+    return check["main_action"], WATCH  # this account verified first, so it's the main one
 
 
 @dataclass
@@ -160,7 +137,7 @@ async def compare_profiles(db, guild_id: str, links: list[Link], profile: dict[s
 
 def strong_enough(link: Link, minimum: str) -> bool:
     """Whether a link scores enough to count if the other account is banned. Below a server's floor, only a ban can make it count."""
-    if RANK[link.confidence] >= RANK.get(minimum, RANK["likely"]):
+    if RANK[link.confidence] >= RANK.get(minimum, RANK["possible"]):
         return True
     # A phone's fingerprint is weak, so two people with one model at one address reach this score without being one person.
     return link.score >= BANNED_LINK_SCORE and "fingerprint" not in link.weak
@@ -172,8 +149,8 @@ def counting(links: list[Link], minimum: str) -> list[Link]:
     Someone who tried and never got in, and wasn't banned, isn't an account this one can be a second
     account of. Anyone who ever got in still counts, even after failing a later check or leaving.
     """
-    floor = RANK.get(minimum, RANK["likely"])
-    return [link for link in links if (link.verified and RANK[link.confidence] >= floor) or (link.banned and strong_enough(link, minimum))]
+    floor = RANK.get(minimum, RANK["possible"])
+    return [link for link in links if not looks_alike_only(link) and ((link.verified and RANK[link.confidence] >= floor) or (link.banned and strong_enough(link, minimum)))]
 
 
 def looks_alike_only(link: Link) -> bool:

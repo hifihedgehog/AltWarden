@@ -327,11 +327,11 @@ class AltMatching(unittest.IsolatedAsyncioTestCase):
         await self.seed("10", cookie="c1")
         self.assertEqual((await self.links({"cookie": "c1"}))[0].confidence, "confirmed")
 
-    async def test_shared_home_connection_is_only_possible(self):
+    async def test_the_same_connection_alone_counts(self):
         await self.seed("10", ip="i1")
         links = await self.links({"ip": "i1"})
-        self.assertEqual(links[0].confidence, "possible")
-        self.assertEqual(altmatch.counting(links, "likely"), [])
+        self.assertEqual(links[0].confidence, "likely")
+        self.assertEqual(altmatch.counting(links, "likely"), links)
 
     async def test_fingerprint_plus_connection_is_likely(self):
         await self.seed("10", fingerprint="f1", ip="i1")

@@ -53,9 +53,9 @@ class RulesPageTables(unittest.TestCase):
 
     def test_the_confidence_labels_say_what_each_level_is(self):
         text = source("settings.js")
-        self.assertIn("Confirmed: the same browser, proven by its cookie", text)
-        self.assertIn("Likely: the same browser setup, or the same kind of computer, on the same connection", text)
-        self.assertIn("Possible: a shared connection or a matching browser setup", text)
+        self.assertIn("Only the same browser cookie", text)
+        self.assertIn("The same connection, or stronger", text)
+        self.assertIn("Any match", text)
 
     def test_setup_doesnt_say_checks_only_watch(self):
         text = source("setup.js")

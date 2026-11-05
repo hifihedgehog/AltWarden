@@ -1715,9 +1715,9 @@ async def the_earlier_account_offers_only_what_acts_on_it(s):
     s.check("the alt itself still has all four", other == "WatchDenyKickBan", other)
 
 
-CONFIDENCE_WORDS = {"possible": "Possible: a shared connection or a matching browser setup",
-                    "likely": "Likely: the same browser setup, or the same kind of computer, on the same connection",
-                    "confirmed": "Confirmed: the same browser, proven by its cookie"}
+CONFIDENCE_WORDS = {"possible": "Any match",
+                    "likely": "The same connection, or stronger",
+                    "confirmed": "Only the same browser cookie"}
 
 
 @scenario

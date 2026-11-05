@@ -133,42 +133,30 @@ class CommandTable(unittest.TestCase):
 
 
 class AltMatching(unittest.TestCase):
-    def test_weights_match_the_code(self):
+    def test_the_evidence_table_names_what_counts_alone(self):
         table = rows("docs.html")
-        self.assertEqual(table["Same browser cookie"][0], str(altmatch.WEIGHTS["cookie"]))
-        self.assertTrue(table["Same browser fingerprint"][0].startswith(f"{altmatch.WEIGHTS['fingerprint']}, or {altmatch.WEAK_WEIGHTS['fingerprint']} on phones"))
-        self.assertTrue(table["Same connection"][0].startswith(f"{altmatch.WEIGHTS['ip']}, or {altmatch.WEAK_WEIGHTS['ip']} on mobile"))
-        self.assertEqual(table["Same kind of device, across browsers"][0], str(altmatch.WEIGHTS["device"]))
-        self.assertEqual(table["Same kind of device on the same connection, neither weak"][0], f"{altmatch.PAIR_BONUS} more")
+        self.assertIn("A VPN address or a carrier's shared IPv4 address doesn't make a match alone", table["Same connection"][0])
+        self.assertIn("On a phone, tablet or Chromebook, it doesn't make a match alone", table["Same browser fingerprint"][0])
+        self.assertIn("signed cookie", table["Same browser cookie"][0])
 
-    def test_levels_and_the_ceiling_without_a_cookie_match_the_code(self):
-        docs = visible("docs.html")
-        levels = dict(altmatch.LEVELS)
-        self.assertIn(f"A total of {levels['confirmed']} is confirmed, {levels['likely']} is likely, and {levels['possible']} is possible.", docs)
-        self.assertIn(f"without it a total stops at {altmatch.SCORE_WITHOUT_COOKIE}", docs)
-        self.assertEqual(settings.defaults()["checks"]["alt_account"]["min_confidence"], "likely")
-        self.assertIn("acts on likely or stronger", docs)
+    def test_the_default_acts_on_any_match(self):
+        self.assertEqual(settings.defaults()["checks"]["alt_account"]["min_confidence"], "possible")
+        self.assertEqual({entry[2]["min_confidence"] for entry in (preset["checks"]["alt_account"] for preset in catalog.PRESETS.values())}, {"possible"})
+        self.assertIn("Your setting for which matches to act on starts at any match", visible("docs.html"))
 
     def test_the_cases_the_docs_name_score_what_they_say(self):
         docs = visible("docs.html")
-        self.assertIn("a shared home connection alone never stops a sibling", docs)
-        self.assertEqual(altmatch.confidence_for(altmatch.score_for({"ip"})), "possible")
-        self.assertIn("neither do two phones of one model on the same Wi-Fi", docs)
-        self.assertEqual(altmatch.confidence_for(altmatch.score_for({"fingerprint", "ip", "device"}, {"fingerprint"})), "possible")
-        self.assertIn("A second browser on one PC at home scores 70", docs)
-        self.assertEqual(altmatch.score_for({"ip", "device"}), 70)
-        self.assertIn("two identical laptops in one home score higher", docs)
-        self.assertGreater(altmatch.score_for({"fingerprint", "ip", "device"}), 70)
+        self.assertIn("A cookie match is confirmed, the same connection is likely, and a fingerprint alone is possible", docs)
+        self.assertEqual(altmatch.confidence_for(altmatch.score_for({"cookie"})), "confirmed")
+        self.assertEqual(altmatch.confidence_for(altmatch.score_for({"ip"})), "likely")
+        self.assertEqual(altmatch.confidence_for(altmatch.score_for({"fingerprint"})), "possible")
 
-    def test_the_sentence_that_only_a_confirmed_link_removes_anyone_holds(self):
+    def test_the_chosen_action_applies_to_any_match(self):
         check = settings.apply_preset(settings.defaults(), "strict")["checks"]["alt_account"]
-        self.assertEqual(altmatch.judge(check, "confirmed", False, True)[0], "ban")
-        self.assertEqual(altmatch.judge(check, "likely", False, True)[0:2], ("deny", "watch"))
-        self.assertEqual(altmatch.judge(check, "likely", True, True)[0], "deny")
-        self.assertIn("Only a confirmed match can remove anyone", visible("docs.html"))
-        self.assertIn("only a match on the signed browser cookie can remove anyone", visible("index.html"))
-        self.assertIn("A link without the cookie stops the account and removes no one", visible("docs.html"))
-
+        self.assertEqual(altmatch.judge(check, False, True), ("ban", "kick"))
+        self.assertEqual(altmatch.judge(check, True, True)[0], "ban")
+        self.assertIn("Any one match makes the new account an alt of the earlier one, and the action you choose applies", visible("docs.html"))
+        self.assertIn("Any one match on the connection, browser cookie or fingerprint makes a second account an alt", visible("index.html"))
 
 class Presets(unittest.TestCase):
     def row(self, name):
@@ -189,7 +177,7 @@ class Presets(unittest.TestCase):
         self.assertIn("Profile picture and Mobile data stay off", self.row("Standard"))
         alt = catalog.PRESETS["standard"]["checks"]["alt_account"][2]
         self.assertEqual((alt["alt_action"], alt["banned_alt_action"]), (catalog.KICK, catalog.BAN))
-        self.assertIn("alt accounts proven by the browser cookie", self.row("Standard"))
+        self.assertIn("Kicks fake browser identities and alt accounts", self.row("Standard"))
         self.assertIn("An alt of a banned account is banned", self.row("Standard"))
 
     def test_stricts_numbers_match_the_table(self):

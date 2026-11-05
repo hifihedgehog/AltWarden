@@ -393,7 +393,7 @@ class Service:
         await self.db.update_member(guild_id, user_id, status="pending")
 
         limit = document["checks"]["max_attempts"]
-        if limit["role"] and record["limit_reached_at"] and (limit["action"] in (WATCH, DENY) or record["limit_held"]):
+        if limit["role"] and record["limit_reached_at"] and limit["action"] in (WATCH, DENY):
             # Leaving took the role away, and the limit it marks is still there.
             problem = await self.port.add_role(guild_id, user_id, limit["role"], "Reached the attempt limit")
             await self._note_role_problem(guild_id, document, user_id, f"give <@&{limit['role']}>", problem)
@@ -595,7 +595,7 @@ class Service:
             if problem == DISCORD_BUSY:  # the stamp stays, so the next minute's timer tries again and the role can't be left on for good
                 return
             await self._note_role_problem(guild_id, rules, user_id, f"take <@&{role}> away", problem)
-        await self.db.update_member(guild_id, user_id, fails=0, limit_reached_at=None, limit_held=0)
+        await self.db.update_member(guild_id, user_id, fails=0, limit_reached_at=None)
 
     async def _note_role_problem(self, guild_id: str, rules: dict, user_id: str | None, what: str, problem: str | None) -> None:
         """Tell staff about a role change that didn't happen, when the member's main outcome went ahead without it. With no ID, the member has asked not to be named."""
@@ -729,7 +729,9 @@ class Service:
         profile = self._profile(guild_id, verdict)
         privacy = rules["privacy"]
         alt = rules["checks"]["alt_account"]
-        weak_ip = net.shared or net.anonymized or net.reserved or net.mobile
+        # A carrier shares one IPv4 address among many customers. An IPv6 /64 belongs to one.
+        on_ipv6 = ":" in ip and not ip.lower().startswith("::ffff:")
+        weak_ip = net.anonymized or net.reserved or ((net.shared or net.mobile) and not on_ipv6)
         # A member who bypasses the check still queues: someone else's check has to see this one's result.
         async with self._evidence_held(guild_id, altmatch.lock_keys(digests, alt, weak_fingerprint=verdict.weak_fingerprint, weak_ip=weak_ip)):
             links = []
@@ -738,7 +740,6 @@ class Service:
             attempt = engine.Attempt(rules, WEB, account, record, net, verdict, links, suspect, hits,
                                      cellular=connection.get("type") == "cellular", bypass=bypass)
             decision = engine.run_checks(attempt, self.regions)
-            # A limit that kicks or bans can come out as a Deny here, held for an unproven link, and then it goes as quiet as any other.
             past = _past_deny_limit(decision, record)
             if past is not None:
                 result = await self._quiet_failure(guild_id, user_id, rules, past)
@@ -767,9 +768,9 @@ class Service:
         for link in links:
             if altmatch.strong_enough(link, alt["min_confidence"]):
                 # Discord is asked one call at a time, under the locks on this evidence, so links that only a ban would make count get a few calls.
-                if altmatch.RANK[link.confidence] < altmatch.RANK.get(alt["min_confidence"], altmatch.RANK["likely"]):
+                if altmatch.RANK[link.confidence] < altmatch.RANK.get(alt["min_confidence"], altmatch.RANK["possible"]):
                     below_floor += 1
-                on_discord = await self._discord_ban(guild_id, link.other_id) if below_floor <= BELOW_FLOOR_BAN_LOOKUPS or altmatch.RANK[link.confidence] >= altmatch.RANK.get(alt["min_confidence"], altmatch.RANK["likely"]) else None
+                on_discord = await self._discord_ban(guild_id, link.other_id) if below_floor <= BELOW_FLOOR_BAN_LOOKUPS or altmatch.RANK[link.confidence] >= altmatch.RANK.get(alt["min_confidence"], altmatch.RANK["possible"]) else None
                 if on_discord and not link.banned:
                     link.banned = True
                     await self.on_ban(guild_id, link.other_id)  # the same as if the ban event had arrived
@@ -961,9 +962,8 @@ class Service:
         reached_now = limited and fails >= limit["attempts"] and not reached_at
         if reached_now:
             reached_at = now
-            # A planted fingerprint mustn't reach a kick through the limit, so with nothing else wrong the limit holds at Deny, as the engine does on later attempts.
-            limit_action = DENY if limit["action"] in (KICK, BAN) and decision.only_unproven_link else limit["action"]
-            await self.db.update_member(guild_id, user_id, limit_reached_at=now, limit_held=int(limit_action != limit["action"]))
+            limit_action = limit["action"]
+            await self.db.update_member(guild_id, user_id, limit_reached_at=now)
             if limit["role"] and limit_action in (WATCH, DENY):
                 problem = await self.port.add_role(guild_id, user_id, limit["role"], "Reached the attempt limit")
                 await self._note_role_problem(guild_id, rules, user_id, f"give <@&{limit['role']}>", problem)
@@ -1168,7 +1168,7 @@ class Service:
             await self.db.run("DELETE FROM sessions WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await self.db.touch_member(guild_id, user_id)
             kick_minutes = core["auto_kick"]["minutes"] if member is not None and core["auto_kick"]["enabled"] else None
-            await self.db.update_member(guild_id, user_id, status="pending", method=None, verified_at=None, fails=0, last_fail_at=None, limit_held=0,
+            await self.db.update_member(guild_id, user_id, status="pending", method=None, verified_at=None, fails=0, last_fail_at=None,
                                         limit_reached_at=None, **(_kick_times(document, time.time()) if kick_minutes else NO_KICK_TIMES))
             if member is not None:
                 problems.append(await self.port.remove_role(guild_id, user_id, core["verified_role"], reason))
@@ -1242,7 +1242,7 @@ class Service:
                 "INSERT INTO members (guild_id, user_id, status, method, verified_at, first_verified_at, joined_at) VALUES (?, ?, 'verified', ?, ?, ?, ?) "
                 "ON CONFLICT (guild_id, user_id) DO UPDATE SET status = 'verified', method = excluded.method, verified_at = excluded.verified_at, "
                 "first_verified_at = COALESCE(members.first_verified_at, excluded.first_verified_at), kick_at = NULL, kick_warn_at = NULL, "
-                "fails = 0, last_fail_at = NULL, limit_reached_at = NULL, limit_held = 0 "
+                "fails = 0, last_fail_at = NULL, limit_reached_at = NULL "
                 "WHERE members.status != 'verified'", [(guild_id, user_id, method, now, now, now) for user_id in user_ids[start:start + 5000]])
             await asyncio.sleep(0)
         count = await self.db.scalar(count_verified, (guild_id,)) - before

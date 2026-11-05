@@ -246,109 +246,6 @@ class InstantMode(Limited):
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM attempts WHERE outcome = 'failed'"), 1)
 
 
-class HoldingALimitForAnUnprovenLink(Limited):
-    """A fingerprint and a device can be planted, so a link below confirmed can't reach a kick through the attempt limit."""
-
-    async def asyncSetUp(self):
-        await super().asyncSetUp()
-        await self.turn_on_alts()
-        await self.edit(lambda document: document["checks"]["max_attempts"].update(enabled=True, action="kick", attempts=2, reset_minutes=0, role=LIMIT_ROLE))
-        first = await self.signed_in(OTHER_USER)
-        self.assertEqual((await self.submit_directly(first, device=None)).status, "verified")
-        self.token = await self.signed_in(OLD_USER)
-
-    async def retry(self):
-        result = await self.submit_directly(self.token, device=None)
-        return result.status, result.reason, result.action
-
-    def on_a_vpn(self):
-        return patch.object(self.service.net, "lookup", lambda ip: NetInfo(vpn=True, known=True))
-
-    async def test_the_attempt_reaching_the_limit_stays_a_deny(self):
-        self.assertEqual(await self.retry(), ("failed", "alt_account", "deny"))
-        self.assertEqual(await self.retry(), ("failed", "max_attempts", "deny"))
-        self.assertEqual(self.port.did("kick"), [])
-        row = await self.row()
-        self.assertEqual(row["fails"], 2)
-        self.assertIsNotNone(row["limit_reached_at"])
-
-    async def test_a_member_held_at_deny_gets_the_limit_role(self):
-        await self.retry()
-        await self.retry()
-        self.assertIn(("add_role", OLD_USER, LIMIT_ROLE), self.port.calls)
-
-    async def test_later_attempts_stay_a_deny_and_go_quiet(self):
-        await self.retry()
-        await self.retry()
-        before = await self.noise()
-        stored = await self.db.scalar("SELECT COUNT(*) FROM identifiers WHERE user_id = ?", (OLD_USER,))
-        for _ in range(3):
-            self.assertEqual(await self.retry(), ("failed", "max_attempts", "deny"))
-        self.assertEqual(await self.noise(), before)
-        self.assertEqual(self.port.did("kick"), [])
-        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM identifiers WHERE user_id = ?", (OLD_USER,)), stored)
-
-    async def test_an_unstamped_member_past_the_limit_is_held_and_stamped(self):
-        await self.db.touch_member(GUILD, OLD_USER)
-        await self.db.update_member(GUILD, OLD_USER, fails=2)
-        self.assertEqual(await self.retry(), ("failed", "max_attempts", "deny"))
-        self.assertEqual(self.port.did("kick"), [])
-        self.assertIsNotNone((await self.row())["limit_reached_at"])
-        self.assertIn(("add_role", OLD_USER, LIMIT_ROLE), self.port.calls)
-
-    async def test_a_vpn_set_to_kick_alongside_the_link_still_kicks(self):
-        await self.change(vpn={"enabled": True, "action": "kick"})
-        await self.retry()
-        with self.on_a_vpn():
-            self.assertEqual((await self.retry())[2], "kick")
-        self.assertEqual(len(self.port.did("kick")), 1)
-
-    async def test_a_vpn_set_to_deny_alongside_the_link_lets_the_limit_kick(self):
-        await self.change(vpn={"enabled": True, "action": "deny"})
-        await self.retry()
-        with self.on_a_vpn():
-            self.assertEqual((await self.retry())[2], "kick")
-
-    async def test_a_second_finding_on_the_last_attempt_lets_the_limit_kick(self):
-        await self.change(vpn={"enabled": True, "action": "deny"})
-        await self.retry()
-        self.assertEqual(self.port.did("kick"), [])
-        with self.on_a_vpn():
-            self.assertEqual((await self.retry())[2], "kick")
-
-    async def test_past_the_hold_nothing_new_is_looked_at(self):
-        await self.change(vpn={"enabled": True, "action": "deny"})
-        await self.retry()
-        await self.retry()
-        with self.on_a_vpn():
-            self.assertEqual((await self.retry())[2], "deny")
-        self.assertEqual(self.port.did("kick"), [])
-
-    async def test_a_cookie_match_isnt_held(self):
-        await self.db.store_identifier(GUILD, OTHER_USER, "cookie", self.keys.digest(int(GUILD), "cookie", "device-1"), time.time() + 86400)
-        result = await self.submit_directly(self.token, device="device-1")
-        self.assertEqual(result.action, "kick")
-
-    async def test_a_link_below_confirmed_set_to_deny_is_held_too(self):
-        await self.change(alt_account={"alt_action": "deny"})
-        await self.retry()
-        self.assertEqual((await self.retry())[2], "deny")
-        self.assertEqual(self.port.did("kick"), [])
-
-    async def test_a_limit_on_ban_is_held_as_well(self):
-        await self.change(max_attempts={"action": "ban"})
-        await self.retry()
-        self.assertEqual((await self.retry())[2], "deny")
-        self.assertEqual(self.port.did("ban"), [])
-
-    async def test_auto_kick_still_removes_whoever_didnt_verify(self):
-        await self.edit(lambda document: document["core"]["auto_kick"].update(enabled=True, minutes=10))
-        await self.retry()
-        await self.db.update_member(GUILD, OLD_USER, kick_at=time.time() - 1)
-        await self.service.tick()
-        self.assertEqual(len(self.port.did("kick")), 1)
-
-
 class LimitsWithNoAltCheck(Limited):
     """Button and instant modes run no alt check, so nothing there can hold a limit."""
 
@@ -468,8 +365,8 @@ class ALinkToABannedAccount(Links):
         await self.service.on_ban(GUILD, OTHER_USER)
         self.port.banned.add(OTHER_USER)
         result = await self.second()
-        self.assertEqual((result.status, result.reason, result.action, result.appeal), ("failed", "alt_account", "deny", True))
-        self.assertEqual(self.port.did("ban"), [])
+        self.assertEqual((result.status, result.reason, result.action), ("failed", "alt_account", "ban"))
+        self.assertEqual(len(self.port.did("ban")), 1)
 
     async def test_the_same_link_to_an_account_in_good_standing_keeps_the_servers_floor(self):
         await self.verified_first()
@@ -484,15 +381,14 @@ class ALinkToABannedAccount(Links):
         await self.service.on_ban(GUILD, OTHER_USER)
         self.port.banned.add(OTHER_USER)
         result = await self.second(user=THIRD_USER)
-        self.assertEqual((result.status, result.action), ("failed", "deny"))
+        self.assertEqual((result.status, result.action), ("failed", "ban"))
 
-    async def test_an_address_alone_doesnt_count(self):
+    async def test_an_address_alone_counts(self):
         await self.verified_first(ip=PUBLIC)
         await self.service.on_ban(GUILD, OTHER_USER)
         self.port.banned.add(OTHER_USER)
         result = await self.second(report=other_machine(), ip=PUBLIC)
-        self.assertEqual(result.status, "verified")
-        self.assertEqual([found["action"] for found in await self.findings()], ["watch"])
+        self.assertEqual((result.status, result.action), ("failed", "ban"))
 
     async def test_the_link_is_counted_once(self):
         await self.verified_first()
@@ -500,7 +396,7 @@ class ALinkToABannedAccount(Links):
         self.port.banned.add(OTHER_USER)
         await self.second()
         found = await self.findings()
-        self.assertEqual([(entry["check"], entry["action"], entry["detail"]["capped"]) for entry in found], [("alt_account", "deny", True)])
+        self.assertEqual([(entry["check"], entry["action"]) for entry in found], [("alt_account", "ban")])
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM links"), 1)
 
     async def test_a_ban_lifted_while_the_bot_wasnt_looking_stops_counting(self):
@@ -512,7 +408,7 @@ class ALinkToABannedAccount(Links):
     async def test_a_ban_the_bot_never_saw_counts(self):
         await self.verified_first()
         self.port.banned.add(OTHER_USER)
-        self.assertEqual((await self.second()).action, "deny")
+        self.assertEqual((await self.second()).action, "ban")
         self.assertTrue(await self.db.is_banned(GUILD, OTHER_USER))
 
     def test_counting_lets_only_a_banned_link_in_below_the_floor(self):
@@ -523,9 +419,8 @@ class ALinkToABannedAccount(Links):
         self.assertEqual(altmatch.counting([link, same_good, low], "confirmed"), [link])
         self.assertEqual(altmatch.counting([link, same_good, low], "possible"), [link, same_good, low])
         self.assertEqual(altmatch.BANNED_LINK_SCORE, 60)
-        self.assertGreater(altmatch.BANNED_LINK_SCORE, altmatch.score_for({"ip"}))
+        self.assertLessEqual(altmatch.BANNED_LINK_SCORE, altmatch.score_for({"ip"}))
         self.assertLessEqual(altmatch.BANNED_LINK_SCORE, altmatch.score_for({"fingerprint", "device"}))
-
 
 class TheWatchListBelowTheFloor(Links):
     async def from_a_phone(self, token, ip):
@@ -562,15 +457,23 @@ class TheWatchListBelowTheFloor(Links):
 
     def test_the_filter_doesnt_hide_a_banned_link_that_counts(self):
         link = altmatch.Link(OTHER_USER, 65, "possible", ["fingerprint", "ip", "device"], banned=True, verified=True)
-        self.assertEqual([finding.action for finding in self.attempt(link).findings], ["deny"])
+        self.assertEqual([finding.check_id for finding in self.attempt(link).enforced], ["alt_account"])
 
-    def test_a_server_that_asks_for_possible_gets_what_it_asked_for(self):
+    def test_the_kind_of_machine_alone_never_makes_a_match(self):
         document = settings.normalize(self.doc)
         document["checks"]["alt_account"].update(enabled=True, min_confidence="possible")
-        link = altmatch.Link(OTHER_USER, 30, "possible", ["fingerprint", "device"], verified=True, weak=["fingerprint"])
+        for link in (altmatch.Link(OTHER_USER, 30, "possible", ["fingerprint", "device"], verified=True, weak=["fingerprint"]),
+                     altmatch.Link(OTHER_USER, 20, "none", ["device"], verified=True),
+                     altmatch.Link(OTHER_USER, 30, "possible", ["ip", "device"], verified=True, weak=["ip"])):
+            decision = engine.run_checks(engine.Attempt(document, "web", engine.Account(OLD_USER, "x", "abc", True, True, False), {}, links=[link]))
+            self.assertEqual(decision.enforced, [], link.methods)
+
+    def test_a_desktop_fingerprint_alone_makes_a_match(self):
+        document = settings.normalize(self.doc)
+        document["checks"]["alt_account"].update(enabled=True, min_confidence="possible")
+        link = altmatch.Link(OTHER_USER, 45, "possible", ["fingerprint"], verified=True)
         decision = engine.run_checks(engine.Attempt(document, "web", engine.Account(OLD_USER, "x", "abc", True, True, False), {}, links=[link]))
         self.assertEqual([finding.check_id for finding in decision.enforced], ["alt_account"])
-
 
 class WhatABanKeeps(Base):
     async def store(self, kind, digest="x"):

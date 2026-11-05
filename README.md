@@ -38,7 +38,7 @@ The [security page](altwarden/web/static/security.html) lists how that works and
 | Default for a new server | The Standard preset, which stops people |
 | A rule that records without blocking | The Watch action, if you set it |
 | Alt matching | Weighs evidence, and shows staff how strong a match is |
-| Who an alt match can remove | Only an account proven by the signed browser cookie. Anything weaker can stop the new account |
+| Alt matches | Any one match on connection, browser cookie or fingerprint, and your chosen action applies |
 | Alts of banned accounts | Their own action |
 | Raid mode | Automatic, from the join rate |
 | Appeals | From the result page, decided with buttons in Discord |

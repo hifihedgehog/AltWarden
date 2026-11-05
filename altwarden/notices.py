@@ -250,8 +250,6 @@ def _detail_text(finding) -> str:
         parts.append(f"bot {detail['bot_score']}, suspect {detail['suspect_score']}")
     if "account" in detail:
         parts.append(f"{detail['confidence'].capitalize()} match, score {detail['score']}")
-    if detail.get("capped"):
-        parts.append("action lowered, because a link below confirmed never removes anyone by itself")
     if "list" in detail:
         parts.append(f"{detail['list']}list rule")
     return "; ".join(parts)
