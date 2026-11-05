@@ -174,7 +174,7 @@ class EarlierAccount(Helpers):
         report = clean_report()
         report["nav"]["ua"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
         await self.verify_through(OTHER_USER, report=report)
-        self.assertIn("different browser", self.logged())
+        self.assertIn("Browser: different", self.logged())
 
     async def test_the_profile_hashes_never_add_to_a_match(self):
         await self.change(alt_account={"enabled": True, "alt_action": "deny", "methods": {"cookie": False, "fingerprint": False, "ip": False}, "min_confidence": "possible"})
