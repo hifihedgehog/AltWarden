@@ -339,7 +339,7 @@ function showServers() {
   const view = shell(null, "Your servers");
   const guilds = state.session.guilds;
   if (!guilds.length) {
-    view.append(h("p", { class: "muted", text: "AltWarden isn't running on any server you have access to. If you just added it, sign out and back in." }));
+    view.append(h("p", { class: "muted", text: "AltWarden isn't running on any server you have access to. If you just added it, reload this page." }));
     return;
   }
   view.append(h("div", { class: "grid two" }, guilds.map((guild) => h("div", { class: "panel" },

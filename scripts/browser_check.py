@@ -2124,6 +2124,7 @@ async def main(shots: Path, only_controls: bool = False, scenarios: list | None 
     async def post_message(guild_id, which):
         return None
     app["post_message"] = post_message
+    app["import_role"] = lambda *_: asyncio.sleep(0, 0)
 
     token = crypto.new_token()
     now = time.time()

@@ -22,5 +22,6 @@ export function render(view, done) {
       field("Verified role", rolePicker(null, (value) => { choice.verified_role = value; }, { given: true }), "Members get this after they pass. AltWarden's role must sit above it."),
       field("Verification channel", channelPicker(null, (value) => { choice.channel = value; }), "New members start here."))),
   h("div", { class: "notice", text: "Your server starts on the Standard rules, which stop anyone who fails a check." }),
+  h("div", { class: "notice", text: "Switching from another bot? After this, press Import members on the Members page." }),
   start);
 }

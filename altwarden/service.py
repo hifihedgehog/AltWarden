@@ -45,8 +45,6 @@ LOOKUP_DAILY_LIMIT = 20  # per member. One member's retries mustn't be able to s
 LOOKUP_NETWORK_LIMIT = 50  # per IPv6 /48 or IPv4 /24, because a new account or a new /64 costs nothing
 LOOKUP_COUNT_SIZE = 20000
 LOOKUP_WARNING_SECONDS = 86400
-STAFF_POST_PER_MINUTE = 6  # each post deletes the one before it, so staff can't be pressed into churning a channel
-STAFF_POST_BURST = 3
 DAY = 86400
 NOT_SET_UP = "This server isn't set up."
 SETTINGS_LOCK = "settings"  # in place of a member's ID, for the lock that writes to a server's settings wait on
@@ -150,7 +148,6 @@ class Service:
         self._lookup_networks: OrderedDict = OrderedDict()  # (server, keyed hash of a wide network): the same
         self._lookup_failures: dict[str, dict] = {}       # server: {at, message}, until the next answer
         self._lookup_warned: dict[str, float] = {}
-        self._staff_posts: dict[str, tuple[float, float]] = {}  # server: (posts it has left, when that was worked out)
 
     def _lock(self, *key: str) -> asyncio.Lock:
         """A lock for one thing. With a server and a member's ID: one attempt at a time per member, so counts and actions can't be doubled by a double click."""
@@ -1255,6 +1252,9 @@ class Service:
             "Members imported", f"<@{actor_id}> marked {count} existing members as verified."))
         return count
 
+    async def import_failed(self, guild_id: str) -> None:
+        await self._log(guild_id, await self.get_settings(guild_id), ["general"], notices.staff_log("Import failed", "The member import didn't finish. Run it again.", notices.RED))
+
     # --- events from Discord ----------------------------------------------------------------
 
     async def on_ban(self, guild_id: str, user_id: str) -> None:
@@ -1554,17 +1554,10 @@ class Service:
     # --- posting ----------------------------------------------------------------------------
 
     async def staff_post(self, guild_id: str, which: str, poster, *, actor_id: str, actor_name: str) -> str:
-        """Post a message again for a member of staff, from the dashboard or /post-message. Returns posted, limited or failed.
+        """Post a message again for a member of staff, from the dashboard or /post-message. Returns posted or failed.
 
         `poster` does the posting and answers False if it couldn't. Only the layer holding the bot has one to give.
         """
-        now = time.monotonic()
-        left, then = self._staff_posts.get(guild_id, (float(STAFF_POST_BURST), now))
-        left = min(float(STAFF_POST_BURST), left + (now - then) * STAFF_POST_PER_MINUTE / 60)
-        if left < 1:
-            self._staff_posts[guild_id] = (left, now)
-            return "limited"
-        self._staff_posts[guild_id] = (left - 1, now)
         if await poster(guild_id, which) is False:
             return "failed"
         await self.db.add_audit(guild_id, "post_message", actor_id=actor_id, actor_name=actor_name, detail={"message": which})

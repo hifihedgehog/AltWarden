@@ -163,6 +163,13 @@ class Gateway:
         self._guilds[guild_id] = (time.monotonic(), view)
         return view
 
+    def guild_ids(self) -> list[str]:
+        """Every server the bot is in, the newest arrival first."""
+        def arrived(guild: discord.Guild) -> float:
+            me = guild.me
+            return me.joined_at.timestamp() if me is not None and me.joined_at else 0
+        return [str(guild.id) for guild in sorted(self.client.guilds, key=arrived, reverse=True)]
+
     async def guild_loading(self, guild_id: str) -> bool:
         """Discord hasn't handed this server over yet: the bot is starting, or the server is in an outage."""
         guild = self._guild(guild_id)

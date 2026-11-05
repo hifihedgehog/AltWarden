@@ -455,6 +455,137 @@ class AppealCard(limits.Limited):
         self.assertNotIn("Which button", await self.card_after(linked=False))
 
 
+class ServerAddedAfterSignIn(test_web_guards.Base):
+    async def listed(self):
+        data = await (await self.client.get("/api/session", headers=self.session_cookie)).json()
+        return [guild["id"] for guild in data["guilds"]]
+
+    async def signed_in_before_it_joined(self, **options):
+        self.port.absent = True
+        await self.log_in(**options)
+        self.port.absent = False
+
+    async def test_it_shows_without_signing_in_again(self):
+        await self.signed_in_before_it_joined()
+        self.assertEqual(await self.listed(), [GUILD])
+
+    async def test_someone_who_isnt_in_it_doesnt_see_it(self):
+        await self.signed_in_before_it_joined()
+        self.port.members.clear()
+        self.assertEqual(await self.listed(), [])
+
+    async def test_someone_without_access_doesnt_see_it(self):
+        await self.signed_in_before_it_joined(perms=(), owner=False)
+        self.assertEqual(await self.listed(), [])
+
+    async def test_discord_not_answering_keeps_it_hidden(self):
+        await self.signed_in_before_it_joined()
+        self.port.discord_down = True
+        self.assertEqual(await self.listed(), [])
+
+    async def test_a_server_from_sign_in_stays_through_a_bad_moment(self):
+        await self.log_in()
+        self.port.discord_down = True
+        self.assertEqual(await self.listed(), [GUILD])
+
+    async def test_the_lookups_are_capped(self):
+        await self.log_in()
+        self.port.guild_ids = lambda: [str(980000000000000000 + number) for number in range(100)]
+        asked = []
+        real = self.port.guild
+
+        async def counting(guild_id):
+            asked.append(guild_id)
+            return await real(guild_id)
+        self.port.guild = counting
+        await self.listed()
+        late = {guild_id for guild_id in asked if guild_id != GUILD}
+        self.assertEqual(len(late), 25)
+
+
+class ImportFromTheDashboard(test_web_guards.Base):
+    async def start(self, role=VERIFIED_ROLE):
+        response = await self.client.post(f"/api/guilds/{GUILD}/import-members", json={"role": role}, headers=self.headers)
+        return response.status, await response.json()
+
+    async def settled(self):
+        await asyncio.gather(*self.app["imports"].values())
+        await asyncio.sleep(0)
+
+    async def test_it_starts_and_passes_the_role_and_who_asked(self):
+        await self.log_in()
+        hook = self.app["import_role"] = AsyncMock(return_value=2)
+        self.assertEqual((await self.start())[0], 200)
+        await self.settled()
+        self.assertEqual(hook.await_args.args[:2], (GUILD, VERIFIED_ROLE))
+        self.assertEqual(self.app["imports"], {})
+
+    async def test_it_needs_the_commands_permissions(self):
+        await self.log_in(perms=("manage_guild",), owner=False)
+        self.app["import_role"] = AsyncMock()
+        self.assertEqual((await self.start())[0], 403)
+        self.app["import_role"].assert_not_awaited()
+
+    async def test_a_role_from_elsewhere_is_refused(self):
+        await self.log_in()
+        self.app["import_role"] = AsyncMock()
+        self.assertEqual((await self.start("980000000000000001"))[0], 400)
+        self.app["import_role"].assert_not_awaited()
+
+    async def test_a_second_one_waits_for_the_first(self):
+        await self.log_in()
+        release = asyncio.Event()
+
+        async def slow(*_):
+            await release.wait()
+        self.app["import_role"] = slow
+        self.assertEqual((await self.start())[0], 200)
+        self.assertEqual((await self.start())[0], 409)
+        release.set()
+        await self.settled()
+        self.assertEqual((await self.start())[0], 200)
+        await self.settled()
+
+    async def test_a_failure_reaches_staff_and_lets_it_run_again(self):
+        await self.log_in()
+        self.app["import_role"] = AsyncMock(side_effect=RuntimeError("no"))
+        told = []
+        self.service.import_failed = AsyncMock(side_effect=lambda guild_id: told.append(guild_id))
+        with self.assertLogs("altwarden.api", "ERROR"):
+            await self.start()
+            await self.settled()
+        self.assertEqual(told, [GUILD])
+        self.assertEqual(self.app["imports"], {})
+
+    async def test_the_guild_view_says_who_can(self):
+        await self.log_in()
+        self.assertTrue((await (await self.client.get(f"/api/guilds/{GUILD}", headers=self.session_cookie)).json())["can_import"])
+
+
+class NoLimitOnHealth(test_bot_commands.Commands):
+    def test_health_can_be_run_as_often_as_staff_like(self):
+        self.assertEqual(self.bot.tree.get_command("health").checks, [])
+
+
+class NoLimitOnStaff(test_web_guards.Base):
+    async def test_posting_answers_every_time(self):
+        await self.log_in()
+        self.app["post_message"] = AsyncMock(return_value=True)
+        answers = [(await self.send("POST", "/post-message", {"message": "verification"}))[0] for _ in range(12)]
+        self.assertEqual(answers, [200] * 12)
+
+    async def test_analytics_answers_every_time(self):
+        await self.log_in()
+        answers = [(await self.get("/analytics"))[0] for _ in range(40)]
+        self.assertEqual(answers, [200] * 40)
+
+    async def test_the_preview_answers_every_time(self):
+        await self.log_in()
+        document = (await self.get("/settings"))[1]["settings"]
+        answers = [(await self.send("POST", "/settings/preview", {"settings": document}))[0] for _ in range(12)]
+        self.assertEqual(answers, [200] * 12)
+
+
 class HistoryRows(test_web_guards.Base):
     async def test_a_members_history_leaves_out_starts_and_keeps_a_thousand(self):
         await self.log_in()

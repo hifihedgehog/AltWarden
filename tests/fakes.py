@@ -70,6 +70,9 @@ class FakePort:
             raise DiscordUnavailable("down")
         return self.members.get((guild_id, user_id))
 
+    def guild_ids(self):
+        return [] if self.absent else [GUILD]
+
     async def guild_loading(self, guild_id):
         return self.loading
 

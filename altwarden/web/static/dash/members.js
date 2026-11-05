@@ -1,5 +1,5 @@
 // Members: search, history, and every staff action in one place.
-import { api, avatarUrl, checkName, confirmDialog, copyText, dialog, field, fill, focusMark, h, lookup, number, plural, pressed, restoreFocus, select, state, toast, topLayer, when, whenLeaving } from "/static/dash/ui.js";
+import { api, rolePicker, avatarUrl, checkName, confirmDialog, copyText, dialog, field, fill, focusMark, h, lookup, number, plural, pressed, restoreFocus, select, state, toast, topLayer, when, whenLeaving } from "/static/dash/ui.js";
 
 const STATUS = { verified: ["Verified", "good"], pending: ["Waiting", "warn"], approved: ["Approved", "good"] };
 const RESULT_NAMES = { passed: "Verified", manual: "Verified by staff", auto_kick: "Auto kicked", auto_kick_failed: "Auto kick failed", role_problem: "Couldn't give the role", honeypot: "Honeypot" };
@@ -141,6 +141,22 @@ function drawer(guildPath, userId, refresh) {
   });
 }
 
+function importDialog(guildPath) {
+  let role = null;
+  dialog("Import members", h("div", {},
+    field("Role your members already hold", rolePicker(null, (value) => { role = value; })),
+    h("p", { class: "muted", text: "Everyone with this role is marked verified, and no roles are given. Anyone missing the verified role gets it by pressing Verify, with no checks." })),
+  { buttons: [{ label: "Cancel" }, { label: "Import", kind: "primary", onClick: async () => {
+    if (!role) {
+      toast("Pick a role first.", true);
+      return false;
+    }
+    await api(`${guildPath}/import-members`, { method: "POST", body: { role } });
+    toast("Import started. The log says when it's finished.");
+    return undefined;
+  } }] });
+}
+
 export async function render(view) {
   const guildPath = `/api/guilds/${state.guild.id}`;
   let page = 1;
@@ -179,7 +195,8 @@ export async function render(view) {
       timer = setTimeout(() => { query = event.target.value.trim(); page = 1; load(); }, 250);
     } }),
     select([{ id: "", name: "Everyone" }, { id: "verified", name: "Verified" }, { id: "pending", name: "Waiting" }], "", (value) => { status = value ?? ""; page = 1; load(); }, { label: "Status" }),
-    select([10, 20, 30, 50].map((count) => ({ id: String(count), name: `${count} per page` })), "20", (value) => { size = Number(value); page = 1; load(); }, { label: "Page size" })),
+    select([10, 20, 30, 50].map((count) => ({ id: String(count), name: `${count} per page` })), "20", (value) => { size = Number(value); page = 1; load(); }, { label: "Page size" }),
+    state.guild.can_import ? h("button", { class: "button small", text: "Import members", onclick: () => importDialog(guildPath) }) : null),
   table);
   await load();
 }

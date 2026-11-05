@@ -1364,7 +1364,7 @@ class TheServerList(WebBase):
 
     def test_the_empty_list_says_how_to_see_a_server_just_added(self):
         source = (Path(__file__).resolve().parent.parent / "altwarden" / "web" / "static" / "dash" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("If you just added it, sign out and back in.", source)
+        self.assertIn("If you just added it, reload this page.", source)
 
 
 class TheAccessRuleAndDiscord(unittest.IsolatedAsyncioTestCase):
@@ -1558,42 +1558,10 @@ class PostingAMessage(Client):
         row = await self.db.one("SELECT actor_id, kind, detail FROM audit WHERE kind = 'post_message'")
         self.assertEqual((row["actor_id"], json.loads(row["detail"])), (STAFF, {"message": "verification"}))
 
-    async def test_the_slash_command_has_the_same_limit_per_server(self):
-        answers = [await self.post() for _ in range(8)]
-        self.assertEqual(answers[0], "Posted.")
-        self.assertIn("Wait a minute", answers[-1])
-        self.assertLessEqual(self.bot.post_message.await_count, 4)
-
     async def test_a_failed_post_writes_no_audit_row(self):
         self.bot.post_message.return_value = False
         self.assertIn("Couldn't post it", await self.post())
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM audit WHERE kind = 'post_message'"), 0)
-
-    async def test_the_limit_is_shared_with_the_dashboard_route(self):
-        for _ in range(3):
-            self.assertEqual(await self.service.staff_post(GUILD, "verification", self.bot.post_message, actor_id=STAFF, actor_name="staff"), "posted")
-        self.assertIn("Wait a minute", await self.post())
-
-    async def test_another_server_has_its_own_limit(self):
-        for _ in range(4):
-            await self.service.staff_post(GUILD, "verification", self.bot.post_message, actor_id=STAFF, actor_name="staff")
-        self.assertEqual(await self.service.staff_post("970000000000000123", "verification", self.bot.post_message, actor_id=STAFF, actor_name="staff"), "posted")
-
-    async def test_the_limit_comes_back(self):
-        for _ in range(4):
-            await self.service.staff_post(GUILD, "verification", self.bot.post_message, actor_id=STAFF, actor_name="staff")
-        real = time.monotonic
-        with patch.object(service_module.time, "monotonic", lambda: real() + 60):
-            self.assertEqual(await self.service.staff_post(GUILD, "verification", self.bot.post_message, actor_id=STAFF, actor_name="staff"), "posted")
-
-
-class TheRouteForPosting(WebBase):
-    async def test_the_route_and_the_service_share_a_bucket(self):
-        await self.log_in()
-        answers = [(await self.send("POST", "/post-message", {"message": "verification"}))[0] for _ in range(8)]
-        self.assertEqual(answers[:3], [200] * 3)
-        self.assertEqual(answers[-1], 429)
-        self.assertEqual(await self.service.staff_post(GUILD, "verification", self.app["post_message"], actor_id=STAFF, actor_name="staff"), "limited")
 
 
 class SavingTheAccessPage(WebBase):

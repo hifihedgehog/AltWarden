@@ -406,6 +406,13 @@ class AltWardenBot(discord.Client):
 
     # --- posting ----------------------------------------------------------------------------
 
+    async def import_role_members(self, guild: discord.Guild, role_id: str, actor_id: str, actor_name: str) -> int:
+        """Mark everyone holding a role as verified. Over REST, because discord.py doesn't notice when Discord rate limits a gateway request for the list, and would wait forever."""
+        everyone = role_id == str(guild.id)
+        members = [str(member.id) async for member in guild.fetch_members(limit=None) if not member.bot and (everyone or member.get_role(int(role_id)) is not None)]
+        document = await self.service.get_settings(str(guild.id))
+        return await self.service.import_members(str(guild.id), members, actor_id, actor_name, holding_role=role_id == document["core"]["verified_role"])
+
     async def post_message(self, guild_id: str, which: str) -> bool:
         """Post the verification or honeypot message, then remove the previous copy, wherever it was."""
         document = await self.service.get_settings(guild_id)
@@ -801,12 +808,11 @@ def register_commands(bot: AltWardenBot) -> None:
             return
         await interaction.response.defer(ephemeral=True)
         outcome = await bot.service.staff_post(str(interaction.guild_id), message.value, bot.post_message, actor_id=str(interaction.user.id), actor_name=interaction.user.name)
-        text = {"posted": "Posted.", "limited": "That was posted a moment ago. Wait a minute, then try again."}.get(outcome, "Couldn't post it. Pick a channel on the dashboard, then run /health.")
+        text = "Posted." if outcome == "posted" else "Couldn't post it. Pick a channel on the dashboard, then run /health."
         await interaction.followup.send(text, ephemeral=True)
 
     @tree.command(name="health", description="Find what would stop members from verifying")
     @app_commands.guild_only()
-    @app_commands.checks.cooldown(1, 60, key=lambda i: (i.guild_id, i.user.id))
     async def health_command(interaction: discord.Interaction) -> None:
         if not await allowed(bot, interaction, "health"):
             return
@@ -907,15 +913,10 @@ def register_commands(bot: AltWardenBot) -> None:
     async def import_members(interaction: discord.Interaction, role: discord.Role) -> None:
         if not await allowed(bot, interaction, "import-members"):
             return
-        document = await ready(bot, interaction)
-        if document is None:
+        if await ready(bot, interaction) is None:
             return
         await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        # Over REST, because discord.py doesn't notice when Discord rate limits a gateway request for the list, and would wait forever.
-        members = [str(member.id) async for member in guild.fetch_members(limit=None) if not member.bot and (role.is_default() or member.get_role(role.id) is not None)]
-        count = await bot.service.import_members(str(guild.id), members, str(interaction.user.id), interaction.user.name,
-                                                 holding_role=str(role.id) == document["core"]["verified_role"])
+        count = await bot.import_role_members(interaction.guild, str(role.id), str(interaction.user.id), interaction.user.name)
         await interaction.followup.send(f"Marked {count} member{'s' if count != 1 else ''} as verified. No roles were given. "
                                         "Anyone missing the verified role gets it by pressing Verify, with no checks.", ephemeral=True)
 

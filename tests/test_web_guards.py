@@ -1048,7 +1048,6 @@ class SiteWideAnswers(Base):
         self.assertEqual(await response.json(), {"ok": True})
 
 
-
 class SettingsRevisions(Base):
     async def rules(self):
         return (await self.get("/settings"))[1]
@@ -1769,18 +1768,6 @@ class HealthPage(Base):
 
 
 class SlowReads(Base):
-    async def test_preview_has_a_limit(self):
-        await self.log_in()
-        document = await self.service.get_settings(GUILD)
-        answers = [(await self.send("POST", "/settings/preview", {"settings": document}))[0] for _ in range(12)]
-        self.assertIn(429, answers)
-        self.assertEqual((await self.send("POST", "/settings/preview", {"settings": document}))[1], {"error": "Too many requests."})
-
-    async def test_analytics_has_a_limit(self):
-        await self.log_in()
-        answers = [(await self.get("/analytics"))[0] for _ in range(25)]
-        self.assertIn(429, answers)
-
     async def test_the_public_api_has_a_limit(self):
         codes = [(await self.client.get(f"/api/v1/guilds/{GUILD}/members/{OLD_USER}")).status for _ in range(80)]
         self.assertIn(429, codes)
@@ -1797,12 +1784,6 @@ class SlowReads(Base):
         await self.db.run("UPDATE api_keys SET last_used_at = last_used_at - 61")
         await self.client.get(f"/api/v1/guilds/{GUILD}/members/{OLD_USER}", headers=headers)
         self.assertGreater(await self.db.scalar("SELECT last_used_at FROM api_keys"), first - 61)
-
-    async def test_posting_has_a_limit_per_server(self):
-        await self.log_in()
-        answers = [(await self.send("POST", "/post-message", {"message": "verification"}))[0] for _ in range(8)]
-        self.assertIn(429, answers)
-        self.assertEqual(answers[0], 200)
 
 
 class Honeypots(Base):
@@ -1903,7 +1884,6 @@ class SmallRoutes(Base):
         data = await (await self.client.get("/api/catalog")).json()
         self.assertEqual(data["presets"]["strict"]["label"], "Strict")
         self.assertEqual(data["presets"]["strict"]["checks"]["vpn"][1], "kick")
-
 
 
 if __name__ == "__main__":

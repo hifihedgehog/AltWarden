@@ -18,11 +18,11 @@
     <ol>
       <li>Add AltWarden to your server with the link it writes to its log when it starts. Only the owner of the Discord app can use that link while Public Bot is off in the Discord Developer Portal, and it should stay off. The link asks for Administrator by default.</li>
       <li>In Server Settings, Roles, drag AltWarden's role above the role it will give out. Administrator doesn't change this, because Discord only lets a bot give roles below its own highest role.</li>
-      <li>Run <code>/setup</code>, or open the <a href="/dashboard">dashboard</a>, and pick a verified role and a verification channel. Unless you're an Administrator, the role has to sit below your own highest role.</li>
+      <li>Open the <a href="/dashboard">dashboard</a>, or run <code>/setup</code>, and pick a verified role and a verification channel. Unless you're an Administrator, the role has to sit below your own highest role.</li>
       <li>Lock your channels so only the verified role can see them, and leave the verification channel visible.</li>
       <li>Open Health on the dashboard, or run <code>/health</code>, to catch anything missing.</li>
     </ol>
-    <p>Switching from another bot? Run <code>/import-members</code> with the role your members already hold. They're marked verified, and they won't be asked to verify while they stay in the server. No roles are given, so anyone missing the verified role gets it by pressing Verify, with no checks. Someone who leaves and rejoins verifies again, unless you turn on Remember verified members.</p>
+    <p>Switching from another bot? Press Import members on the Members page, or run <code>/import-members</code>, with the role your members already hold. They're marked verified, and they won't be asked to verify while they stay in the server. No roles are given, so anyone missing the verified role gets it by pressing Verify, with no checks. Someone who leaves and rejoins verifies again, unless you turn on Remember verified members.</p>
 
     <h2>Lock down your server</h2>
     <p>Set the verification channel so new members can read it but can't chat in it.</p>
@@ -167,7 +167,7 @@ Authorization: Bearer aw_...
       <tr><th>What you see</th><th>What to do</th></tr>
       <tr><td>Members don't get the role</td><td>In Server Settings, Roles, drag AltWarden's role above the role it gives, and check it has Manage Roles. If you recreated the role, pick the new one on the Rules page.</td></tr>
       <tr><td>A member says the link doesn't work</td><td>Links last an hour, or your Auto Kick time, and stop working once used or replaced. The member can press Verify in the channel for a new one.</td></tr>
-      <tr><td>Your server isn't on the dashboard</td><td>You need access to at least one page, which by default means Manage Server, or Manage Roles for the Appeals page. AltWarden also has to be in that server. Sign out and back in if your roles changed.</td></tr>
+      <tr><td>Your server isn't on the dashboard</td><td>You need access to at least one page, which by default means Manage Server, or Manage Roles for the Appeals page. AltWarden also has to be in that server. Reload the page after adding it.</td></tr>
       <tr><td>The verification message is gone</td><td>Run <code>/post-message</code>, or press Post it again on the Messages page.</td></tr>
       <tr><td>New members no longer see Discord's rules screen</td><td>Discord skips that screen for anyone given a role, so the Unverified role turns it off. Leave that role off if you rely on the screen.</td></tr>
       <tr><td>A real member keeps failing one check</td><td>Send a bypass link that skips only that check, or verify them yourself with <code>/verify-user</code>.</td></tr>

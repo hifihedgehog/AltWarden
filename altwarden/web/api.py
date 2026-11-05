@@ -185,19 +185,30 @@ def _pages_for(document: dict, viewer: access.Viewer) -> dict:
     return result
 
 
+LATE_SERVER_LOOKUPS = 25
+
+
 async def me(request: web.Request) -> web.Response:
     session = await current_session(request)
     if session is None or session["scope"] != "dashboard":
         return json_error(401, "Sign in first.", login="/login")
     service: Service = request.app["service"]
+    # The list from sign-in can't name a server added since, and the token that read it is gone, so the bot's own list fills in the rest.
+    known = {guild["id"] for guild in session["guilds"]}
+    late = []
+    for guild_id in [guild_id for guild_id in service.port.guild_ids() if guild_id not in known][:LATE_SERVER_LOOKUPS]:
+        view = await service.port.guild(guild_id)
+        if view is not None:
+            late.append({"id": view.id, "name": view.name, "icon": view.icon})
     servers = []
-    for guild in session["guilds"]:
+    for guild in [*session["guilds"], *late]:
         if await service.port.guild(guild["id"]) is None and not await service.port.guild_loading(guild["id"]):
             continue  # the bot only runs where its owner put it, so nothing here offers to add it
         try:
             viewer = await _viewer(service, session, guild["id"])
         except DiscordUnavailable:
-            reachable = True  # one server's bad moment mustn't cost the whole list, and its own page says what's wrong
+            # One server's bad moment mustn't cost the whole list, and its own page says what's wrong. A late one has nothing yet saying this person is in it.
+            reachable = guild["id"] in known
         else:
             reachable = False
             if viewer is not None:
@@ -247,11 +258,12 @@ async def guild_view(request: web.Request) -> web.Response:
     # The same test as the setup route, so the screen and the route can't disagree.
     can_setup = not set_up and access.allowed(settings_module.command_rule(document, "setup"), viewer)
     # The names of private channels and roles go only to people on a page that picks them, or finishing setup, which picks two.
-    picks = can_setup or any(pages[page]["view"] for page in ("settings", "permissions", "appearance"))
+    can_import = access.allowed(settings_module.command_rule(document, "import-members"), viewer)
+    picks = can_setup or can_import or any(pages[page]["view"] for page in ("settings", "permissions", "appearance"))
     return web.json_response({
         "id": guild.id, "name": guild.name, "icon": guild.icon, "member_count": guild.member_count,
         "roles": guild.roles if picks else [], "channels": guild.channels if picks else [], "bot_top_role": guild.bot_top_role,
-        "setup_done": set_up, "can_setup": can_setup,
+        "setup_done": set_up, "can_setup": can_setup, "can_import": can_import,
         "raid_until": row["raid_until"] if row else 0, "pages": pages,
         "verifying_now": await analytics.verifying_now(service.db, guild_id),
         "healthy": (await health.full_report(service, guild_id, guild, document))["healthy"] if set_up else True,
@@ -310,6 +322,37 @@ async def setup(request: web.Request) -> web.Response:
                                 actor_id=session["user_id"], actor_name=session["username"], setup_done=True)
     posted = await request.app["post_message"](_gid(request), "verification")
     return web.json_response({"ok": True, "problem": None if posted is not False else COULD_NOT_POST})
+
+
+async def import_members(request: web.Request) -> web.Response:
+    """What /import-members does. Reading a big server's member list takes minutes, so this starts it, and the log says when it's done."""
+    guarded = await _command_guard(request, "import-members")
+    if isinstance(guarded, web.Response):
+        return guarded
+    session, _, _ = guarded
+    app = request.app
+    service: Service = app["service"]
+    guild_id = _gid(request)
+    guild = await service.port.guild(guild_id)
+    if guild is None:
+        return await _no_guild(service, guild_id)
+    role = (await _body(request)).get("role")
+    if not any(item["id"] == role for item in guild.roles):
+        return json_error(400, "Pick a role from this server.")
+    running = app["imports"]
+    if guild_id in running:
+        return json_error(409, "An import is already running on this server.")
+
+    async def run() -> None:
+        try:
+            await app["import_role"](guild_id, role, session["user_id"], session["username"])
+        except Exception:
+            log.exception("Member import failed for %s", guild_id)
+            await service.import_failed(guild_id)
+        finally:
+            running.pop(guild_id, None)
+    running[guild_id] = asyncio.ensure_future(run())
+    return web.json_response({"started": True})
 
 
 async def settings_get(request: web.Request) -> web.Response:
@@ -431,8 +474,6 @@ async def preview(request: web.Request) -> web.Response:
     guarded = await _guard(request, "settings")
     if isinstance(guarded, web.Response):
         return guarded
-    if limited(request, "preview", per_minute=10, burst=5):
-        return json_error(429, "Too many requests.")
     service: Service = request.app["service"]
     body = await _body(request)
     return web.json_response(await analytics.preview(service.db, _gid(request), settings_module.normalize(body.get("settings")),
@@ -464,8 +505,6 @@ async def analytics_view(request: web.Request) -> web.Response:
     guarded = await _guard(request, "analytics")
     if isinstance(guarded, web.Response):
         return guarded
-    if limited(request, "analytics", per_minute=30, burst=15):
-        return json_error(429, "Too many requests.")
     service: Service = request.app["service"]
     now = time.time()
     end = _moment(request.query.get("to"), now)
@@ -830,8 +869,6 @@ async def post_message(request: web.Request) -> web.Response:
     if which == "honeypot" and not document["honeypot"]["enabled"]:
         return json_error(400, "The honeypot is off, so its warning would be untrue. Turn it on first.")
     outcome = await request.app["service"].staff_post(_gid(request), which, request.app["post_message"], actor_id=session["user_id"], actor_name=session["username"])
-    if outcome == "limited":
-        return json_error(429, "Too many requests.")
     if outcome == "failed":
         return json_error(400, "Couldn't post it. Pick a channel on the Rules page, then look at the Health page.")
     return web.json_response({"ok": True})
@@ -1058,6 +1095,7 @@ def routes(app: web.Application) -> None:
     post(f"{gid}/settings/preview", preview)
     post(f"{gid}/settings/export", export_settings)
     post(f"{gid}/settings/import", import_settings)
+    post(f"{gid}/import-members", import_members)
     get(f"{gid}/analytics", analytics_view)
     get(f"{gid}/members", members_list)
     get(f"{gid}/members/{{uid:{SNOWFLAKE}}}", member_detail)
