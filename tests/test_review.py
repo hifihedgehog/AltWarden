@@ -17,7 +17,7 @@ from multidict import CIMultiDict
 from altwarden import altmatch, analytics, db as database, engine, health, notices, settings, signals
 from altwarden.ports import DiscordUnavailable
 from altwarden.web.api import webhook_problem
-from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, RateLimiter
+from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, RateLimiter, VERIFY_FLOW_COOKIE
 from fakes import CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE
 from test_detection import CHROME_WIN, clean_report, judge
 from test_flow import Base, Dashboard, solve
@@ -32,8 +32,10 @@ class Addresses(Base):
         token = await self.link_for()
         await self.sign_in(token)
         cookies = self.cookie_header(DEVICE_COOKIE, BROWSER_COOKIE)
-        challenge = await (await self.client.post(f"/api/verify/{token}/challenge", headers=cookies)).json()
-        headers = CIMultiDict([("User-Agent", CHROME_WIN), *cookies.items()])
+        response = await self.client.post(f"/api/verify/{token}/challenge", headers=cookies)
+        challenge = await response.json()
+        self.jar[DEVICE_COOKIE] = response.cookies[DEVICE_COOKIE].value
+        headers = CIMultiDict([("User-Agent", CHROME_WIN), *self.cookie_header(BROWSER_COOKIE, DEVICE_COOKIE).items()])
         for line in forwarded_lines:
             headers.add("X-Forwarded-For", line)
         headers.add("X-Probe", "1")
@@ -202,7 +204,7 @@ class Requests(Base):
 
     async def test_non_ascii_state_is_refused_quietly(self):
         for path in ("/verify/callback", "/dashboard/callback"):
-            response = await self.client.get(path, params={"state": "é"}, allow_redirects=False, headers={"Cookie": f"{FLOW_COOKIE}=abc.def"})
+            response = await self.client.get(path, params={"state": "é"}, allow_redirects=False, headers={"Cookie": f"{FLOW_COOKIE}=abc.def; {VERIFY_FLOW_COOKIE}=abc.def.ghi"})
             self.assertEqual(response.status, 302, path)
 
     async def test_a_500_doesnt_log_the_link(self):
@@ -250,6 +252,7 @@ class PageRules(Dashboard):
 
     async def test_setup_refuses_another_servers_channel_too(self):
         await self.log_in()
+        await self.db.run("UPDATE guilds SET setup_done = 0")
         response = await self.client.post(f"/api/guilds/{GUILD}/setup", json={"verified_role": VERIFIED_ROLE, "channel": OTHER_SERVERS_CHANNEL}, headers=self.headers)
         self.assertEqual(response.status, 400)
 
@@ -289,7 +292,7 @@ class PageRules(Dashboard):
                               headers={"Cookie": f"{FLOW_COOKIE}={response.cookies[FLOW_COOKIE].value}"})
         stored = (await self.db.one("SELECT guilds FROM web_sessions"))["guilds"]
         self.assertNotIn("hobby", stored)
-        self.assertIn("Mine", stored)
+        self.assertNotIn("Mine", stored)
         self.assertIn(GUILD, stored)
 
 
@@ -436,7 +439,7 @@ class FailingEndsAPass(Base):
         document = await self.service.get_settings(GUILD)
         document["honeypot"].update(enabled=True, channel=LOG_CHANNEL, action="kick")
         await self.service.save_settings(GUILD, document)
-        await self.service.honeypot_hit(GUILD, OLD_USER, "x", LOG_CHANNEL, "1", role_ids=())
+        await self.service.honeypot_hit(GUILD, OLD_USER, LOG_CHANNEL, "1", role_ids=())
         self.assertEqual((await self.db.member(GUILD, OLD_USER))["status"], "pending")
 
 
@@ -463,28 +466,32 @@ class EarlierAccounts(Base):
         for kind, value in (("fingerprint", "a" * 32), ("ip", "8.8.4.4")):
             await self.db.store_identifier(GUILD, OTHER_USER, kind, self.keys.digest(int(GUILD), kind, value), time.time() + 999)
         await self.change(alt_account={"enabled": True, "alt_action": "kick", "main_action": "watch"})
-        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "kick")
+        # A fingerprint and an address stop the alt, and only a confirmed link can remove it.
+        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "deny")
+        link = await self.db.one("SELECT main_id, alt_id FROM links")
+        self.assertEqual((link["main_id"], link["alt_id"]), (OTHER_USER, OLD_USER))
 
     async def test_someone_who_never_got_in_isnt_an_account_to_match(self):
         await self.db.touch_member(GUILD, OTHER_USER)
         await self.db.store_identifier(GUILD, OTHER_USER, "cookie", "c1", time.time() + 999)
         links = await altmatch.find_links(self.db, GUILD, OLD_USER, {"cookie": "c1"}, methods={"cookie": True}, weak_fingerprint=False, weak_ip=False)
-        self.assertIsNone(altmatch.strongest(links, "likely"))
+        self.assertEqual(altmatch.counting(links, "likely"), [])
 
     async def test_someone_who_got_in_once_still_counts_after_failing_a_later_check(self):
         await self.verified(OTHER_USER, time.time() - 900)
         await self.db.update_member(GUILD, OTHER_USER, status="pending", verified_at=None)
         await self.db.store_identifier(GUILD, OTHER_USER, "cookie", "c1", time.time() + 999)
         links = await altmatch.find_links(self.db, GUILD, OLD_USER, {"cookie": "c1"}, methods={"cookie": True}, weak_fingerprint=False, weak_ip=False)
-        self.assertEqual(altmatch.strongest(links, "likely").other_id, OTHER_USER)
+        self.assertEqual(altmatch.counting(links, "likely")[0].other_id, OTHER_USER)
 
     async def test_a_ban_only_discord_knows_about_counts_even_if_they_never_got_in(self):
         await self.db.touch_member(GUILD, OTHER_USER)
         for kind, value in (("fingerprint", "a" * 32), ("ip", "8.8.4.4")):
             await self.db.store_identifier(GUILD, OTHER_USER, kind, self.keys.digest(int(GUILD), kind, value), time.time() + 999)
         self.port.banned.add(OTHER_USER)
-        await self.change(alt_account={"enabled": True, "alt_action": "deny", "banned_alt_action": "ban"})
-        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "ban")
+        await self.change(alt_account={"enabled": True, "alt_action": "watch", "banned_alt_action": "ban"})
+        # Without the cookie the ban stops at Deny. A Watch alt would have let them in, so this is the ban counting.
+        self.assertEqual((await self.verify_through(ip="8.8.4.4"))["action"], "deny")
 
     async def test_the_first_account_stays_the_main_one_after_passing_again(self):
         await self.verified(OLD_USER, time.time() - 1000)
@@ -508,11 +515,10 @@ class EarlierAccounts(Base):
         self.assertEqual(links[0].other_id, OTHER_USER)
 
     async def test_a_banned_earlier_account_can_appeal(self):
-        await self.verified(OTHER_USER, time.time() - 500)
-        await self.db.store_identifier(GUILD, OTHER_USER, "fingerprint", self.keys.digest(int(GUILD), "fingerprint", "a" * 32), time.time() + 999)
-        await self.db.store_identifier(GUILD, OTHER_USER, "ip", self.keys.digest(int(GUILD), "ip", "8.8.4.4"), time.time() + 999)
+        self.port.add_member(OTHER_USER)
         await self.change(alt_account={"enabled": True, "alt_action": "watch", "main_action": "ban"})
-        await self.verify_through(ip="8.8.4.4")
+        await self.verify_through(OTHER_USER)  # the same browser next, so the cookie confirms the link
+        await self.verify_through(OLD_USER)
         self.assertIn(("ban", OTHER_USER, "AltWarden: main account of <" + OLD_USER + ">", 0), self.port.calls)
         self.assertIsNone(await self.service.submit_appeal(GUILD, OTHER_USER, "other", "This really is my brother's account."))
         self.assertEqual((await self.db.member(GUILD, OTHER_USER))["status"], "pending")
@@ -525,9 +531,9 @@ class EarlierAccounts(Base):
         for kind, value in (("fingerprint", "a" * 32), ("ip", "8.8.4.4")):
             await self.db.store_identifier(GUILD, THIRD_USER, kind, self.keys.digest(int(GUILD), kind, value), time.time() + 999)
         self.port.banned.add(THIRD_USER)
-        await self.change(alt_account={"enabled": True, "alt_action": "deny", "banned_alt_action": "ban"})
+        await self.change(alt_account={"enabled": True, "alt_action": "watch", "banned_alt_action": "ban"})
         result = await self.verify_through(ip="8.8.4.4")
-        self.assertEqual(result["action"], "ban")
+        self.assertEqual(result["action"], "deny")  # the stronger match is only watched, so this is the banned one, stopped at Deny without a cookie
 
 
 class AltEvidence(unittest.IsolatedAsyncioTestCase):
@@ -836,10 +842,10 @@ class Timers(Base):
         await self.db.update_member(GUILD, THIRD_USER, kick_at=time.time() - 1)
         original = self.port.member
 
-        async def picky(guild_id, user_id):
+        async def picky(guild_id, user_id, **kwargs):
             if user_id == OTHER_USER:
                 raise DiscordUnavailable("503")
-            return await original(guild_id, user_id)
+            return await original(guild_id, user_id, **kwargs)
         self.port.member = picky
         with self.assertLogs("altwarden.service", "ERROR"):
             await self.service.tick()
@@ -894,7 +900,7 @@ class Limits(Base):
         self.assertIn("The honeypot channel can't be the verification channel.", settings.problems(document))
 
     def test_country_rules_keep_their_whole_names(self):
-        rules = {"region:Latin America and the Caribbean": "ban", "region:South-eastern Asia": "kick", "region:Australia and New Zealand": "watch"}
+        rules = {"region:Northern America": "ban", "region:South-eastern Asia": "kick", "region:Australia and New Zealand": "watch"}
         document = settings.defaults()
         document["checks"]["geogate"]["overrides"] = rules
         self.assertEqual(settings.normalize(document)["checks"]["geogate"]["overrides"], rules)
@@ -1169,12 +1175,13 @@ class Retention(Base):
         await self.service.purge()
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM identifiers WHERE kind = 'ip'"), 0)
 
-    async def test_an_active_ban_still_keeps_them(self):
+    async def test_an_active_ban_keeps_all_but_the_address(self):
         await self.verify_through()
-        await self.db.run("UPDATE identifiers SET last_seen = ?", (time.time() - 40 * 86400,))
+        await self.db.run("UPDATE identifiers SET last_seen = ?", (time.time() - 400 * 86400,))
         await self.service.on_ban(GUILD, OLD_USER)
         await self.service.purge()
-        self.assertGreater(await self.db.scalar("SELECT COUNT(*) FROM identifiers WHERE kind = 'ip'"), 0)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM identifiers WHERE kind = 'ip'"), 0, "an address moves on to someone else")
+        self.assertGreater(await self.db.scalar("SELECT COUNT(*) FROM identifiers WHERE kind = 'fingerprint'"), 0)
 
     async def test_an_expired_link_goes_at_once(self):
         await self.link_for()
@@ -1261,11 +1268,11 @@ class Health(unittest.TestCase):
 
 class Messages(unittest.TestCase):
     def test_hidden_reasons_stay_hidden_in_the_dm(self):
-        notice = notices.failed_notice("Server", "vpn", "text", "deny", "https://x.test", None, None, False)
+        notice = notices.failed_notice("Server", "vpn", "text", "deny", "https://x.test", None, False)
         self.assertEqual(notice.buttons[0].url, "https://x.test/help/verification")
 
     def test_shown_reasons_link_to_their_guide(self):
-        notice = notices.failed_notice("Server", "vpn", "text", "deny", "https://x.test", None, None, True)
+        notice = notices.failed_notice("Server", "vpn", "text", "deny", "https://x.test", None, True)
         self.assertEqual(notice.buttons[0].url, "https://x.test/help/vpn")
 
     def test_a_long_server_name_cant_push_an_embed_past_discords_limit(self):
@@ -1291,7 +1298,7 @@ class Imports(Base):
         count = await self.service.import_members(GUILD, people, STAFF, "staff")
         self.assertEqual(count, 12000)
         self.assertLess(time.perf_counter() - started, 20)
-        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM members WHERE method = 'imported'"), 12000)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM members WHERE method LIKE 'imported%'"), 12000)
 
 
 if __name__ == "__main__":

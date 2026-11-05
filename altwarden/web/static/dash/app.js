@@ -1,6 +1,6 @@
 // The dashboard shell: session, server picker, navigation, search, and the shared save bar.
-import { dirtyKeys, discardAll, forgetAll, onChange, pagesClosed, saveAll } from "/static/dash/drafts.js";
-import { api, avatarUrl, dialog, field, h, iconUrl, segments, state } from "/static/dash/ui.js";
+import { dirtyKeys, discardAll, draftsOwner, forget, forgetAll, onChange, pagesClosed, saveAll } from "/static/dash/drafts.js";
+import { api, ApiError, avatarUrl, dialog, field, focusMark, h, iconUrl, leavePage, openLayer, report, restoreFocus, segments, state, svg, syncLayers, topLayer } from "/static/dash/ui.js";
 
 window.pageStarted = true;  // tells loading-guard.js this script loaded
 const PAGES = [
@@ -16,15 +16,64 @@ const PAGES = [
 ];
 
 const root = document.getElementById("root");
+let saving = false;
+let showInvalid = false;
+
+function conflictDialog(part, message) {
+  dialog("Someone else changed these settings", h("p", { text: `${message} Reloading drops your unsaved changes on this page. They can't be saved until you do.` }), { buttons: [
+    { label: "Keep editing" },
+    { label: "Reload", kind: "primary", onClick: () => {
+      forget(part.key);
+      route();
+    } },
+  ] });
+}
 
 // A setting the server refused gets shown, even when the save started on another page.
 async function saveEverything() {
-  const failed = await saveAll();
-  const item = failed?.error?.data?.items?.[0]?.item;
-  if (!item) return;
+  // A second press would send the revision the first press is about to replace, and look like a conflict.
+  if (saving) return;
+  saving = true;
+  const guildId = state.guild.id;
+  let failed;
+  try {
+    failed = await saveAll();
+  } finally {
+    saving = false;
+  }
+  if (state.guild?.id !== guildId) return;
+  if (!failed) {
+    refreshGuild(guildId);
+    return;
+  }
+  if (failed.error?.data?.conflict) {
+    conflictDialog(failed.part, failed.error.message);
+    return;
+  }
   const page = failed.part.key;
-  if (location.pathname.endsWith(`/${page}`)) showItem(item);
-  else navigate(`/dashboard/${state.guild.id}/${page}#${item}`);
+  const here = location.pathname.endsWith(`/${page}`);
+  const item = failed.error?.data?.items?.[0]?.item;
+  if (failed.invalid && !here) {
+    showInvalid = true;
+    navigate(`/dashboard/${guildId}/${page}`);
+  } else if (item && here) {
+    showItem(item);
+  } else if (item) {
+    navigate(`/dashboard/${guildId}/${page}#${item}`);
+  }
+}
+
+// A save can change what Health says, and only this shell shows that.
+async function refreshGuild(guildId) {
+  try {
+    const guild = await api(`/api/guilds/${guildId}`);
+    if (state.guild?.id === guildId) {
+      state.guild = guild;
+      drawGuildMarks();
+    }
+  } catch {
+    // The marks stay as they were until the next page opens.
+  }
 }
 
 function showItem(target) {
@@ -44,8 +93,23 @@ function drawSaveBar() {
     h("span", { text: "You have unsaved changes." }),
     h("button", { class: "button small", text: "Discard", onclick: discardAll }),
     h("button", { class: "button small primary", text: "Save changes", onclick: saveEverything })));
+  syncLayers();  // an edit in a dialog can bring the bar up, and it stays behind that dialog
 }
 onChange(drawSaveBar);
+
+// The raid pill and the Health dot belong to the shell, so a page that changes them says so.
+function drawGuildMarks() {
+  const title = document.querySelector(".topbar h1");
+  document.querySelector(".raid-pill")?.remove();
+  if (title && state.guild?.raid_until * 1000 > Date.now()) title.after(h("span", { class: "pill bad raid-pill", text: "Raid mode on" }));
+  const health = document.querySelector(".nav [data-page=health]");
+  const amber = health?.querySelector(".dot.amber");  // a locked page has no dots at all
+  if (amber) {
+    health.querySelector(".dot:not(.amber)")?.remove();
+    if (state.guild?.healthy === false) amber.before(h("span", { class: "dot", title: "Something needs fixing" }));
+  }
+}
+document.addEventListener("aw-guild", drawGuildMarks);
 
 function readLook() {
   try {
@@ -100,17 +164,44 @@ function serverMenu(current) {
   return [button, list];
 }
 
+function lockIcon() {
+  return svg("svg", { class: "lock", viewBox: "0 0 16 16", width: 12, height: 12, "aria-hidden": "true" },
+    svg("path", { d: "M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7Zm2 0h4V5a2 2 0 0 0-4 0Z", fill: "currentColor" }));
+}
+
+// A locked page isn't a link, so the keyboard can't land on it and a screen reader says why it's there.
+function navItem(item, page, guild, open) {
+  if (!open) {
+    return h("span", { class: "locked", "data-page": item.id, "aria-disabled": "true", title: "You don't have access to this page" },
+      item.label, lockIcon(), h("span", { class: "visually-hidden", text: " (locked)" }));
+  }
+  return h("a", { href: `/dashboard/${guild.id}/${item.id}`, class: item.id === page ? "active" : "", "data-page": item.id, "aria-current": item.id === page ? "page" : null }, item.label,
+    item.id === "health" && guild.healthy === false ? h("span", { class: "dot", title: "Something needs fixing" }) : null,
+    h("span", { class: "dot amber", title: "Unsaved changes" }));
+}
+
+function closeMenu(returnFocus = true) {
+  const side = document.getElementById("side");
+  if (!side?.classList.contains("open")) return;
+  side.classList.remove("open");
+  const toggle = document.querySelector(".menu-toggle");
+  toggle?.setAttribute("aria-expanded", "false");
+  if (returnFocus) toggle?.focus();
+}
+
+function openMenu() {
+  const side = document.getElementById("side");
+  side.classList.add("open");
+  document.querySelector(".menu-toggle").setAttribute("aria-expanded", "true");
+  side.querySelector("button")?.focus();
+}
+
 function sideBar(page) {
   const guild = state.guild;
   const allowed = guild?.pages ?? {};
-  const nav = guild ? h("nav", { class: "nav", "aria-label": "Pages" }, PAGES.map((item) => {
-    const open = allowed[item.id]?.view;
-    return h("a", { href: `/dashboard/${guild.id}/${item.id}`, class: `${item.id === page ? "active" : ""} ${open ? "" : "locked"}`,
-      "data-page": item.id, "aria-current": item.id === page ? "page" : null }, item.label,
-    item.id === "health" && guild.healthy === false ? h("span", { class: "dot", title: "Something needs fixing" }) : null,
-    h("span", { class: "dot amber", title: "Unsaved changes" }));
-  })) : null;
+  const nav = guild ? h("nav", { class: "nav", "aria-label": "Pages" }, PAGES.map((item) => navItem(item, page, guild, allowed[item.id]?.view))) : null;
   return h("aside", { class: "side", id: "side" },
+    h("button", { class: "icon-button side-close", text: "Close menu", onclick: () => closeMenu() }),
     h("a", { class: "brand", href: "/" }, h("img", { src: "/static/img/logo.svg", alt: "" }), "AltWarden"),
     serverMenu(guild), nav,
     h("div", { class: "side-links" },
@@ -128,26 +219,30 @@ function sideBar(page) {
 
 function shell(page, title) {
   const view = h("div", { class: "view", id: "view" });
-  const raid = state.guild && state.guild.raid_until * 1000 > Date.now();
-  root.replaceChildren(h("div", { class: "shell" }, sideBar(page),
+  root.replaceChildren(h("div", { class: "shell" }, sideBar(page), h("div", { class: "scrim", onclick: () => closeMenu() }),
     h("main", { class: "main" },
       h("header", { class: "topbar" },
-        h("button", { class: "icon-button menu-toggle", text: "Menu", onclick: () => document.getElementById("side").classList.toggle("open") }),
+        h("button", { class: "icon-button menu-toggle", text: "Menu", "aria-expanded": "false", "aria-controls": "side", onclick: () => {
+          if (document.getElementById("side").classList.contains("open")) closeMenu();
+          else openMenu();
+        } }),
         h("h1", { text: title }),
-        raid ? h("span", { class: "pill bad", text: "Raid mode on" }) : null,
         state.guild ? h("button", { class: "search-open", onclick: openSearch }, "Search", h("kbd", { text: "Ctrl K" })) : null),
       view)));
+  drawGuildMarks();
   return view;
 }
 
 function searchEntries() {
   const entries = PAGES.filter((item) => state.guild.pages[item.id]?.view).map((item) => ({ label: item.label, kind: "Page", go: `/dashboard/${state.guild.id}/${item.id}` }));
-  for (const check of state.catalog.checks) entries.push({ label: check.name, kind: "Rule", go: `/dashboard/${state.guild.id}/settings#${check.id}` });
-  for (const [id, label] of [["core", "Verification mode"], ["core", "Verified role"], ["core", "Verification channel"], ["unverified", "Unverified role"], ["autodm", "DM new members"],
-    ["closeddms", "Ping when DMs are closed"], ["autokick", "Auto kick"], ["cooldown", "Cooldown"], ["rejoin", "Remember verified members"], ["reason", "Tell members why"],
-    ["failopen", "Let members through if network data is missing"], ["external", "Outside VPN lookup"], ["direct", "Skip the start page"], ["logs", "Logs"], ["alerts", "Alerts"],
-    ["helpdesk", "Help desk"], ["honeypot", "Honeypot"], ["raid", "Raid mode"], ["appeals", "Appeals setup"], ["retention", "Data retention"]]) {
-    entries.push({ label, kind: "Setting", go: `/dashboard/${state.guild.id}/settings#${id}` });
+  if (state.guild.pages.settings?.view) {
+    for (const check of state.catalog.checks) entries.push({ label: check.name, kind: "Rule", go: `/dashboard/${state.guild.id}/settings#${check.id}` });
+    for (const [id, label] of [["core", "Verification mode"], ["core", "Verified role"], ["core", "Verification channel"], ["unverified", "Unverified role"], ["autodm", "DM new members"],
+      ["closeddms", "Ping when DMs are closed"], ["autokick", "Auto kick"], ["cooldown", "Cooldown"], ["rejoin", "Remember verified members"], ["reason", "Tell members why"],
+      ["failopen", "Let members through if network data is missing"], ["external", "Outside VPN lookup"], ["direct", "Skip the start page"], ["logs", "Logs"], ["alerts", "Alerts"],
+      ["helpdesk", "Help desk"], ["honeypot", "Honeypot"], ["raid", "Raid mode"], ["appeals", "Appeals setup"], ["retention", "Data retention"]]) {
+      entries.push({ label, kind: "Setting", go: `/dashboard/${state.guild.id}/settings#${id}` });
+    }
   }
   if (state.guild.pages.permissions?.view) {
     for (const name of state.catalog.commands) entries.push({ label: `/${name}`, kind: "Permission", go: `/dashboard/${state.guild.id}/permissions#command-${name}` });
@@ -158,16 +253,26 @@ function searchEntries() {
 }
 
 function openSearch() {
-  if (!state.guild || document.querySelector(".palette")) return;
+  if (!state.guild || topLayer()) return;
+  const opener = focusMark();
   const entries = searchEntries();
   let selected = 0;
   let shown = entries;
-  const list = h("ul");
-  const close = () => overlay.remove();
-  const go = (entry) => { close(); navigate(entry.go); };
-  const draw = () => list.replaceChildren(...shown.slice(0, 30).map((entry, index) => h("li", {}, h("button", {
-    class: index === selected ? "on" : "", onclick: () => go(entry) }, h("span", { text: entry.label }), h("small", { text: entry.kind })))));
-  const input = h("input", { type: "search", placeholder: "Search pages, rules and servers", "aria-label": "Search", oninput: (event) => {
+  let closeLayer = () => {};
+  const list = h("ul", { role: "listbox", id: "palette-list", "aria-label": "Results" });
+  const close = (back = true) => {
+    closeLayer();
+    if (back) restoreFocus(opener);
+  };
+  const go = (entry) => { close(false); navigate(entry.go); };
+  const draw = () => {
+    list.replaceChildren(...shown.slice(0, 30).map((entry, index) => h("li", { role: "none" }, h("button", {
+      role: "option", id: `palette-${index}`, "aria-selected": String(index === selected), class: index === selected ? "on" : "", onclick: () => go(entry) },
+    h("span", { text: entry.label }), h("small", { text: entry.kind })))));
+    if (shown.length) input.setAttribute("aria-activedescendant", `palette-${selected}`);
+    else input.removeAttribute("aria-activedescendant");
+  };
+  const input = h("input", { type: "search", role: "combobox", "aria-expanded": "true", "aria-controls": "palette-list", placeholder: "Search pages, rules and servers", "aria-label": "Search", oninput: (event) => {
     const term = event.target.value.toLowerCase();
     shown = entries.filter((entry) => entry.label.toLowerCase().includes(term));
     selected = 0;
@@ -176,22 +281,33 @@ function openSearch() {
     if (event.key === "ArrowDown") { selected = Math.min(selected + 1, shown.length - 1); draw(); event.preventDefault(); }
     if (event.key === "ArrowUp") { selected = Math.max(selected - 1, 0); draw(); event.preventDefault(); }
     if (event.key === "Enter" && shown[selected]) go(shown[selected]);
-    if (event.key === "Escape") close();
   } });
   const overlay = h("div", { class: "overlay", onclick: (event) => { if (event.target === overlay) close(); } },
-    h("div", { class: "dialog palette", role: "dialog", "aria-label": "Search" }, input, list));
-  document.body.append(overlay);
+    h("div", { class: "dialog palette", role: "dialog", "aria-modal": "true", "aria-label": "Search" }, input, list));
+  closeLayer = openLayer(overlay, close);
   draw();
   input.focus();
+  syncLayers();
 }
 
 addEventListener("keydown", (event) => {
   const mod = event.ctrlKey || event.metaKey;
   if (mod && event.key.toLowerCase() === "k") { event.preventDefault(); openSearch(); }
   if (mod && event.key.toLowerCase() === "s" && dirtyKeys().length) { event.preventDefault(); saveEverything(); }
+  if (event.key === "Escape" && !topLayer()) closeMenu();
 });
 
+// Every way into another server comes through here: a link, the search palette, Back and Forward.
+function mayLeaveFor(path) {
+  const target = new URL(path, location.origin).pathname.split("/")[2];
+  if (!dirtyKeys().length || target === draftsOwner()) return true;
+  if (!confirm("You have unsaved changes in this server. Leave and lose them?")) return false;
+  forgetAll();
+  return true;
+}
+
 export function navigate(path) {
+  if (!mayLeaveFor(path)) return;
   history.pushState(null, "", path);
   route();
 }
@@ -200,22 +316,30 @@ document.addEventListener("click", (event) => {
   const link = event.target.closest?.("a[href^='/dashboard']");
   if (link && !event.ctrlKey && !event.metaKey) {
     event.preventDefault();
-    const target = link.getAttribute("href");
-    if (dirtyKeys().length && target.split("/")[2] !== state.guild?.id) {
-      if (!confirm("You have unsaved changes in this server. Leave and lose them?")) return;
-      forgetAll();
-    }
-    navigate(target);
+    navigate(link.getAttribute("href"));
   }
 });
-addEventListener("popstate", route);
+
+let shownPath = location.pathname + location.search + location.hash;
+addEventListener("popstate", () => {
+  if (!mayLeaveFor(location.pathname)) {
+    history.pushState(null, "", shownPath);  // the page never left, so the address shouldn't have
+    return;
+  }
+  route();
+});
 addEventListener("beforeunload", (event) => { if (dirtyKeys().length) event.preventDefault(); });
+// An action nothing else is waiting on still has to say it failed. A request's failure is expected, so it isn't a page error.
+addEventListener("unhandledrejection", (event) => {
+  if (event.reason instanceof ApiError) event.preventDefault();
+  report(event.reason);
+});
 
 function showServers() {
   const view = shell(null, "Your servers");
   const guilds = state.session.guilds;
   if (!guilds.length) {
-    view.append(h("p", { class: "muted", text: "AltWarden isn't running on any server you have access to." }));
+    view.append(h("p", { class: "muted", text: "AltWarden isn't running on any server you have access to. If you just added it, sign out and back in." }));
     return;
   }
   view.append(h("div", { class: "grid two" }, guilds.map((guild) => h("div", { class: "panel" },
@@ -223,7 +347,13 @@ function showServers() {
     h("div", { class: "toolbar" }), h("a", { class: "button primary small", href: `/dashboard/${guild.id}`, text: "Open" })))));
 }
 
+// Only the newest navigation may draw, because an older one can answer last.
+let routeTurn = 0;
+
 async function route() {
+  const turn = ++routeTurn;
+  shownPath = location.pathname + location.search + location.hash;
+  leavePage();
   pagesClosed();
   const [, , guildId, pageId] = location.pathname.split("/");
   if (!guildId) {
@@ -231,20 +361,34 @@ async function route() {
     showServers();
     return;
   }
+  let guild;
   try {
-    state.guild = await api(`/api/guilds/${guildId}`);
+    guild = await api(`/api/guilds/${guildId}`);
   } catch (error) {
+    if (turn !== routeTurn) return;
+    state.guild = null;
     shell(null, "Can't open this server").append(h("p", { class: "muted", text: error.message }));
     return;
   }
+  if (turn !== routeTurn) return;
+  state.guild = guild;
   document.title = `${state.guild.name} | AltWarden`;
   if (!state.guild.setup_done) {
     const view = shell(null, "Set up AltWarden");
-    (await import("/static/dash/setup.js")).render(view, () => route());
+    try {
+      (await import("/static/dash/setup.js")).render(view, () => route());
+    } catch (error) {
+      view.append(h("div", { class: "notice bad", text: error.message }));
+    }
     return;
   }
   const first = PAGES.find((item) => state.guild.pages[item.id]?.view);
-  const page = PAGES.find((item) => item.id === pageId && state.guild.pages[item.id]?.view) ?? first;
+  const asked = PAGES.find((item) => item.id === pageId);
+  if (asked && !state.guild.pages[asked.id]?.view) {
+    shell(null, asked.label).append(h("div", { class: "notice bad", text: "You don't have access to this page." }));
+    return;
+  }
+  const page = asked ?? first;
   if (!page) {
     shell(null, "No access").append(h("p", { class: "muted", text: "You don't have access to any page here." }));
     return;
@@ -252,9 +396,17 @@ async function route() {
   const view = shell(page.id, page.label);
   try {
     await (await page.load()).render(view);
+    if (turn !== routeTurn) return;
     drawSaveBar();
     showItem(location.hash.slice(1));
+    if (showInvalid) {
+      showInvalid = false;
+      const bad = view.querySelector("input:invalid");
+      bad?.scrollIntoView({ block: "center" });
+      bad?.focus();
+    }
   } catch (error) {
+    if (turn !== routeTurn) return;
     view.append(h("div", { class: "notice bad", text: error.message }));
   }
 }
@@ -262,11 +414,12 @@ async function route() {
 async function start() {
   try {
     state.session = await api("/api/session");
-  } catch {
+    state.csrf = state.session.csrf;
+    state.catalog = await api("/api/catalog");
+  } catch (error) {
+    if (!error.signingIn) root.replaceChildren(h("p", { class: "prose" }, `${error.message} `, h("a", { href: location.href, text: "Reload" }), " to try again."));
     return;
   }
-  state.csrf = state.session.csrf;
-  state.catalog = await api("/api/catalog");
   await route();
 }
 

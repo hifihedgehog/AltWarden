@@ -17,7 +17,6 @@ self.postMessage({
   platform: navigator.platform,
   cores: navigator.hardwareConcurrency,
   memory: navigator.deviceMemory,
-  languages: navigator.languages,
   tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
   gpu: graphicsRenderer(),
 });

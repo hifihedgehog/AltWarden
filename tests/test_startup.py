@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import os
 import signal
+import socket
 import sys
 import tempfile
 import unittest
@@ -19,7 +20,12 @@ from altwarden.crypto import new_master_key
 from altwarden.netintel import NetIntel
 from fakes import FakePort
 
-PORT = 8896
+
+def free_port() -> int:
+    """A port nothing holds now, so test runs at the same time can't collide."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 class StubBot:
@@ -61,7 +67,8 @@ class StubBot:
 class Startup(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.folder = tempfile.TemporaryDirectory()
-        self.args = argparse.Namespace(public_url="https://altwarden.test", host="127.0.0.1", port=PORT, data=self.folder.name)
+        self.port = free_port()
+        self.args = argparse.Namespace(public_url="https://altwarden.test", host="127.0.0.1", port=self.port, data=self.folder.name)
         self.env = patch.dict(os.environ, {"DISCORD_TOKEN": "token", "DISCORD_CLIENT_SECRET": "secret", "MASTER_KEY": new_master_key()})
         self.env.start()
         self.bot = patch("altwarden.bot.client.AltWardenBot", StubBot)
@@ -80,7 +87,7 @@ class Startup(unittest.IsolatedAsyncioTestCase):
         async with aiohttp.ClientSession() as session:
             for _ in range(100):
                 try:
-                    async with session.get(f"http://127.0.0.1:{PORT}/healthz") as response:
+                    async with session.get(f"http://127.0.0.1:{self.port}/healthz") as response:
                         return await response.json()
                 except aiohttp.ClientError:
                     await asyncio.sleep(0.05)
@@ -118,7 +125,7 @@ class Startup(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.calls[-1], "close", "systemd restarts the process, so it must exit, not hang")
         async with aiohttp.ClientSession() as session:
             with self.assertRaises(aiohttp.ClientError):
-                await session.get(f"http://127.0.0.1:{PORT}/healthz")
+                await session.get(f"http://127.0.0.1:{self.port}/healthz")
 
     async def test_a_failed_login_still_closes_the_database(self):
         # aiosqlite's worker thread isn't a daemon, so an open database would keep the process alive forever.

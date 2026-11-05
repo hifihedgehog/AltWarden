@@ -1,5 +1,5 @@
 // Overview page. Two fixed series, verified and stopped, use the first two validated palette slots.
-import { api, checkName, fill, h, section, select, state, svg } from "/static/dash/ui.js";
+import { api, checkName, fill, h, lookup, plural, section, select, state, svg } from "/static/dash/ui.js";
 
 const DAY = 86400;
 const RANGES = [{ id: "month", name: "This month" }, { id: "7", name: "Last 7 days" }, { id: "30", name: "Last 30 days" }, { id: "90", name: "Last 90 days" }, { id: "365", name: "Last 12 months" }, { id: "custom", name: "Pick dates" }];
@@ -8,11 +8,14 @@ const CHART_MODES = [{ id: "area", name: "Area" }, { id: "bars", name: "Bars" },
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const OUTCOME_NAMES = { web: "Web page", button: "Button", instant: "Instant", staff: "By staff", deny: "Denied", kick: "Kicked", ban: "Banned", auto_kick: "Auto kicked" };
 
-function delta(now, before) {
+const plainChange = (change) => String(Number.isInteger(change) ? change : change.toFixed(1));
+
+// The change in the same words as the number above it, so "2m" doesn't sit over "+120".
+function delta(now, before, words = plainChange) {
   if (before === undefined || before === null || now === null) return null;
   const change = now - before;
   if (change === 0) return "No change";
-  return `${change > 0 ? "+" : ""}${Number.isInteger(change) ? change : change.toFixed(1)} vs previous`;
+  return `${change > 0 ? "+" : "-"}${words(Math.abs(change))} vs previous`;
 }
 
 function kpi(label, value, compare) {
@@ -25,9 +28,18 @@ function formatSeconds(value) {
   return value < 60 ? `${Math.round(value)}s` : `${Math.round(value / 60)}m`;
 }
 
+// A day's stopped attempts, leaving out the checks the person has unticked.
+function stoppedOn(day, hidden) {
+  return day.blocked - Object.entries(day.checks).reduce((sum, [id, count]) => sum + (hidden.has(id) ? count : 0), 0);
+}
+
+function total(list, count) {
+  return list.reduce((sum, item) => sum + count(item), 0);
+}
+
 function dailyChart(days, mode, hidden) {
   const width = 900, height = 240, left = 34, right = 10, top = 10, bottom = 24;
-  const stopped = days.map((day) => Object.entries(day.checks).reduce((sum, [id, count]) => sum + (hidden.has(id) ? 0 : count), 0));
+  const stopped = days.map((day) => stoppedOn(day, hidden));
   const rate = days.map((day, index) => {
     const total = day.verified + stopped[index];
     return total ? day.verified / total * 100 : null;
@@ -66,7 +78,7 @@ function dailyChart(days, mode, hidden) {
     area(days.map((day) => day.verified), "a");
     area(stopped, "b");
   }
-  const chart = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Verification activity per day" },
+  const chart = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": days.length ? `Verification activity per day, ${days[0].day} to ${days.at(-1).day}: ${total(days, (day) => day.verified)} verified and ${total(stopped, (count) => count)} stopped.` : "Verification activity per day: nothing in this period." },
     ticks.map((tick) => [svg("line", { class: "grid-line", x1: left, x2: width - right, y1: y(tick), y2: y(tick) }),
       svg("text", { x: left - 6, y: y(tick) + 4, "text-anchor": "end" }, mode === "rate" ? `${tick}%` : String(tick))]),
     [0, Math.floor((days.length - 1) / 2), days.length - 1].filter((value, index, list) => list.indexOf(value) === index).map((index) =>
@@ -130,30 +142,42 @@ function heatmap(grid) {
       cells.push(cell);
     });
   });
-  return h("div", { class: "heat", role: "img", "aria-label": "Verifications by weekday and hour" }, cells);
+  return h("div", { class: "heat", role: "img", "aria-label": "Verifications by weekday and hour. The table below has the same numbers." }, cells);
 }
 
-function checkFilter(hidden, reload) {
+function heatTable(grid) {
+  const rows = grid.flatMap((row, day) => row.map((count, hour) => ({ day, hour, count }))).filter((cell) => cell.count);
+  return h("details", { "data-key": "heat-table" }, h("summary", { class: "faint", text: "Show as a table" }),
+    h("div", { class: "table-wrap" }, h("table", { class: "list heat-table" },
+      h("thead", {}, h("tr", {}, h("th", { text: "Day" }), h("th", { text: "Hour" }), h("th", { text: "Verifications" }))),
+      h("tbody", {}, rows.map((cell) => h("tr", {}, h("td", { text: WEEKDAYS[cell.day] }), h("td", { text: `${cell.hour}:00` }), h("td", { text: String(cell.count) })))))));
+}
+
+function checkFilter(hidden, redraw) {
   const seen = state.catalog.checks;
-  return h("details", { class: "check-filter" }, h("summary", { class: "button small", text: hidden.size ? `Checks: ${seen.length - hidden.size} of ${seen.length}` : "Every check" }),
+  return h("details", { class: "check-filter", "data-key": "check-filter" }, h("summary", { class: "button small", text: hidden.size ? `Checks: ${seen.length - hidden.size} of ${seen.length}` : "Every check" }),
     h("div", { class: "panel chips" }, seen.map((check) => h("label", { class: "chip" }, h("input", { type: "checkbox", checked: !hidden.has(check.id), onchange: (event) => {
       if (event.target.checked) hidden.delete(check.id);
       else hidden.add(check.id);
-      reload();
-    } }), check.name))));
+      redraw();
+    } }), check.name)), h("p", { class: "faint wide-note", text: "Changes the chart, the table and the list of reasons. The totals above stay whole." })));
+}
+
+function cutNote(range) {
+  return range?.clamped ? h("div", { class: "notice", text: `That period is longer than one report can cover, so this one starts on ${new Date(range.start * 1000).toLocaleDateString()}.` }) : null;
 }
 
 function busiest(days) {
   const top = days.reduce((best, day) => (day.verified + day.blocked > best.verified + best.blocked ? day : best), { verified: 0, blocked: 0 });
-  return top.day ? `The busiest day was ${top.day}, with ${top.verified + top.blocked} attempts.` : "No attempts in this period.";
+  return top.day ? `The busiest day was ${top.day}, with ${plural(top.verified + top.blocked, "attempt")}.` : "No attempts in this period.";
 }
 
-function dataTable(days) {
-  return h("details", {}, h("summary", { class: "faint", text: "Show as a table" }),
-    h("div", { class: "table-wrap" }, h("table", { class: "list" },
+function dataTable(days, hidden) {
+  return h("details", { "data-key": "day-table" }, h("summary", { class: "faint", text: "Show as a table" }),
+    h("div", { class: "table-wrap" }, h("table", { class: "list day-table" },
       h("thead", {}, h("tr", {}, h("th", { text: "Day" }), h("th", { text: "Verified" }), h("th", { text: "Stopped" }))),
-      h("tbody", {}, days.filter((day) => day.verified || day.blocked).map((day) => h("tr", {},
-        h("td", { text: day.day }), h("td", { text: String(day.verified) }), h("td", { text: String(day.blocked) })))))));
+      h("tbody", {}, days.filter((day) => day.verified || stoppedOn(day, hidden)).map((day) => h("tr", {},
+        h("td", { text: day.day }), h("td", { text: String(day.verified) }), h("td", { text: String(stoppedOn(day, hidden)) })))))));
 }
 
 export async function render(view) {
@@ -163,6 +187,8 @@ export async function render(view) {
   let compare = "";
   let mode = "area";
   const hidden = new Set();
+  let asked = 0;  // only the newest range may draw, because an older one can answer last
+  let data = null;
   const fromBox = h("input", { type: "date", "aria-label": "From", hidden: true, onchange: () => load() });
   const toBox = h("input", { type: "date", "aria-label": "To", hidden: true, onchange: () => load() });
   const period = () => {
@@ -177,6 +203,7 @@ export async function render(view) {
     return [end - Number(days === "custom" ? 30 : days) * DAY, end];
   };
   const load = async () => {
+    const turn = ++asked;
     const [start, end] = period();
     const query = new URLSearchParams({ from: String(start), to: String(end), tz: zone, compare: compare ? "1" : "0" });
     if (compare === "month") {
@@ -189,32 +216,40 @@ export async function render(view) {
       query.set("compare_from", String(monthBefore(start)));
       query.set("compare_to", String(monthBefore(end, 1)));
     }
-    const data = await api(`/api/guilds/${state.guild.id}/analytics?${query}`);
+    const answer = await api(`/api/guilds/${state.guild.id}/analytics?${query}`);
+    if (turn !== asked) return;
+    data = answer;
+    draw();
+  };
+  // The chart type and the check filter only change how this answer is drawn, so they don't ask again.
+  const draw = () => {
     const previous = data.previous ?? {};
     const cards = data.cards;
+    const reasons = data.reasons.filter(([id]) => !hidden.has(id));
     fill(body,
+      cutNote(data.range),
       h("div", { class: "grid kpis section" },
         kpi("Verified", String(cards.verified), delta(cards.verified, previous.verified)),
         kpi("Stopped", String(cards.blocked), delta(cards.blocked, previous.blocked)),
-        kpi("Pass rate", cards.pass_rate === null ? "No data" : `${cards.pass_rate}%`, delta(cards.pass_rate, previous.pass_rate)),
+        kpi("Pass rate", cards.pass_rate === null ? "No data" : `${cards.pass_rate}%`, delta(cards.pass_rate, previous.pass_rate, (change) => `${plainChange(change)} points`)),
         kpi("Members tried", String(cards.members), delta(cards.members, previous.members)),
-        kpi("Median time", formatSeconds(cards.median_seconds), cards.median_seconds === null || previous.median_seconds === null ? null : delta(cards.median_seconds, previous.median_seconds)),
+        kpi("Median time", formatSeconds(cards.median_seconds), cards.median_seconds === null || previous.median_seconds === null ? null : delta(cards.median_seconds, previous.median_seconds, formatSeconds)),
         kpi("Verifying now", String(data.verifying_now))),
       section("Daily activity", busiest(data.daily), h("div", { class: "panel" },
         h("div", { class: "toolbar" },
-          select(CHART_MODES, mode, (value) => { mode = value; load(); }, { label: "Chart type" }),
-          checkFilter(hidden, load)),
+          select(CHART_MODES, mode, (value) => { mode = value; draw(); }, { label: "Chart type" }),
+          checkFilter(hidden, draw)),
         mode === "rate" ? null : h("div", { class: "legend" }, h("span", {}, h("i", { class: "a" }), "Verified"), h("span", {}, h("i", { class: "b" }), "Stopped")),
-        dailyChart(data.daily, mode, hidden), dataTable(data.daily))),
+        dailyChart(data.daily, mode, hidden), dataTable(data.daily, hidden))),
       h("div", { class: "grid two section" },
         h("div", { class: "panel" }, h("h3", { text: "Why attempts were stopped" }),
-          data.reasons.length ? bars(data.reasons.map(([id, value]) => ({ label: checkName(id), value })), "b") : h("p", { class: "faint", text: "Nothing stopped in this period." })),
+          reasons.length ? bars(reasons.map(([id, value]) => ({ label: checkName(id), value })), "b") : h("p", { class: "faint", text: "Nothing stopped in this period." })),
         h("div", { class: "panel" }, h("h3", { text: "Funnel" }), funnel(data.funnel))),
       h("div", { class: "grid two section" },
-        h("div", { class: "panel" }, h("h3", { text: "Busiest times" }), heatmap(data.heatmap)),
+        h("div", { class: "panel" }, h("h3", { text: "Busiest times" }), heatmap(data.heatmap), heatTable(data.heatmap)),
         h("div", { class: "panel" }, h("h3", { text: "Time to verify" }), bars(data.durations.map((row) => ({ label: row.label, value: row.count }))))),
       section("Outcomes", null, h("div", { class: "panel" },
-        bars([...Object.entries(data.outcomes.modes), ...Object.entries(data.outcomes.actions)].map(([id, value]) => ({ label: OUTCOME_NAMES[id] ?? id, value }))),
+        bars([...Object.entries(data.outcomes.modes), ...Object.entries(data.outcomes.actions)].map(([id, value]) => ({ label: lookup(OUTCOME_NAMES, id, id), value }))),
         h("p", { class: "faint", text: `${data.outcomes.bypassed} used a bypass link.` }))));
   };
   view.append(h("div", { class: "toolbar" },

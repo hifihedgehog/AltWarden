@@ -1,3 +1,3 @@
 """AltWarden: a self-hosted Discord verification bot that keeps no raw member identifiers."""
 
-__version__ = "1.1.3"
+__version__ = "1.2.0"

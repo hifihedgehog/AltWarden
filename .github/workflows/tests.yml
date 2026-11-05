@@ -3,6 +3,9 @@ name: tests
 on:
   push:
   pull_request:
+  schedule:
+    # A locked package can pick up an advisory with no push to the repository.
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -10,27 +13,57 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock
+      # The lock is resolved on 3.13. Below that version audioop-lts doesn't install and typing_extensions is
+      # needed, so 3.11 and 3.12 take the ranges in requirements.txt.
+      - name: Install the locked versions
+        if: matrix.python-version == '3.13'
+        run: "pip install --require-hashes --only-binary :all: -r requirements.lock"
+      - name: Install the version ranges
+        if: matrix.python-version != '3.13'
+        run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit==2.10.1
+      - run: pip-audit --require-hashes --disable-pip -r requirements.lock
 
   list-sources:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements.lock
+      - run: "pip install --require-hashes --only-binary :all: -r requirements.lock"
       - run: python scripts/check_sources.py

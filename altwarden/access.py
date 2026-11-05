@@ -21,18 +21,22 @@ class Viewer:
         return self.is_owner or "administrator" in self.permissions
 
 
-def channel_allowed(rule: dict, channel_id: str | None) -> bool:
-    """Commands can be limited to, or kept out of, specific channels."""
+def channel_allowed(rule: dict, channel_id: str | tuple | None) -> bool:
+    """Commands can be limited to, or kept out of, specific channels.
+
+    In a thread, `channel_id` is the thread's ID and then its channel's, because a channel's rule covers the threads in it.
+    """
     entries = [entry for entry in rule.get("overrides", []) if entry["type"] == "channel"]
     if channel_id is None or not entries:
         return True
-    for entry in entries:
-        if entry["id"] == channel_id:
-            return bool(entry["allow"])
+    for place in (channel_id,) if isinstance(channel_id, str) else channel_id:
+        for entry in entries:
+            if entry["id"] == place:
+                return bool(entry["allow"])
     return not any(entry["allow"] for entry in entries)
 
 
-def allowed(rule: dict, viewer: Viewer, channel_id: str | None = None) -> bool:
+def allowed(rule: dict, viewer: Viewer, channel_id: str | tuple | None = None) -> bool:
     if viewer.is_admin:
         return True
     if not channel_allowed(rule, channel_id):

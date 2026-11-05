@@ -5,7 +5,9 @@ Administrator on the add link knows what the bot still needs.
 """
 from __future__ import annotations
 
-from .catalog import BAN, BY_ID, CHECK_IDS, KICK, PERMISSION_LABELS
+from .catalog import BAN, BY_ID, CHECK_IDS, KICK, PERMISSION_LABELS, WEB
+from .engine import effective_settings
+from .netintel import REFRESH_SECONDS
 from .settings import given_roles
 
 # Discord permission bits, from the permissions topic.
@@ -21,6 +23,11 @@ BASE_PERMISSIONS = ("administrator", "manage_roles", "manage_channels", "kick_me
                     "change_nickname", "view_channel", "moderate_members", "send_messages", "send_messages_in_threads",
                     "create_private_threads", "manage_messages", "manage_threads", "embed_links", "read_message_history",
                     "mention_everyone", "external_emojis", "pin_messages")
+# What report() gets when its caller didn't look up the Verify post, as opposed to looking and finding none.
+POST_UNKNOWN = object()
+PUBLIC_CHANNELS_SHOWN = 10
+# Discord's library can't post in the other kinds, and the dashboard's pickers don't offer them.
+POSTABLE_CHANNELS = ("text", "news")
 
 
 def invite_permissions() -> int:
@@ -32,19 +39,13 @@ def invite_url(client_id: str) -> str:
             f"&permissions={invite_permissions()}")
 
 
-def needed_permissions(settings: dict) -> dict[str, list[str]]:
-    """Each server-wide permission the settings use, and which features use it."""
-    core = settings["core"]
-    needs: dict[str, list[str]] = {"manage_roles": ["Verified role"]}
-    if core["unverified_enabled"]:
-        needs["manage_roles"].append("Unverified role")
+def _check_removals(settings: dict) -> tuple[list[str], list[str]]:
+    """The checks that can kick and the checks that can ban, under these settings."""
     kicks: list[str] = []
     bans: list[str] = []
-    if core["auto_kick"]["enabled"]:
-        kicks.append("Auto kick")
     for check_id in CHECK_IDS:
         check = settings["checks"][check_id]
-        if not check["enabled"] or core["mode"] not in BY_ID[check_id].modes:
+        if not check["enabled"] or settings["core"]["mode"] not in BY_ID[check_id].modes:
             continue
         actions = {check["action"]}
         if check_id == "alt_account":
@@ -55,8 +56,24 @@ def needed_permissions(settings: dict) -> dict[str, list[str]]:
             kicks.append(BY_ID[check_id].name)
         if BAN in actions:
             bans.append(BY_ID[check_id].name)
+    return kicks, bans
+
+
+def needed_permissions(settings: dict) -> dict[str, list[str]]:
+    """Each server-wide permission the settings use, and which features use it."""
+    core = settings["core"]
+    needs: dict[str, list[str]] = {"manage_roles": ["Verified role"]}
+    if core["unverified_enabled"]:
+        needs["manage_roles"].append("Unverified role")
+    kicks, bans = _check_removals(settings)
+    if core["auto_kick"]["enabled"]:
+        kicks.insert(0, "Auto kick")
     if settings["raid"]["enabled"]:
         kicks.append("Raid mode")  # a raid tightens account age and alt accounts to at least Kick
+        if _check_removals(effective_settings(settings, True))[1]:  # and turns Alt accounts on, where a banned account's alt can stay at Ban
+            bans.append("Raid mode")
+    if settings["appeals"]["enabled"]:
+        bans.append("Appeals")  # approving an appeal lifts the ban
     pot = settings["honeypot"]
     if pot["enabled"]:
         if pot["action"] == "kick":
@@ -84,15 +101,22 @@ def _channel(guild, channel_id):
     return next((channel for channel in guild.channels if channel["id"] == channel_id), None)
 
 
+def _at_or_above_bot(guild, role: dict) -> bool:
+    """Whether Discord would stop AltWarden giving this role. Equal positions sort by ID, and the higher ID sits lower."""
+    if role["position"] != guild.bot_top_role:
+        return role["position"] > guild.bot_top_role
+    return not guild.bot_top_role_id or int(role["id"]) <= int(guild.bot_top_role_id)
+
+
 def _check_role(guild, label: str, role_id, issues: list, ok: list, *, must_mention: bool = False, feature: str | None = None) -> None:
     role = _role(guild, role_id)
     if role is None:
-        issues.append({"area": "roles", "feature": feature, "title": f"{label} is missing", "fix": f"Pick a {label.lower()} on the Settings page."})
+        issues.append({"area": "roles", "feature": feature, "title": f"{label} is missing", "fix": f"Pick a {label.lower()} on the Rules page."})
         return
     if role["managed"] or role["id"] == guild.id:
         issues.append({"area": "roles", "feature": feature, "title": f"{label} can't be used", "fix": "Pick a regular role. @everyone and roles owned by other apps can't be given out."})
         return
-    if not must_mention and role["position"] >= guild.bot_top_role:
+    if not must_mention and _at_or_above_bot(guild, role):
         issues.append({"area": "roles", "feature": feature, "title": f"AltWarden's role is below {role['name']}",
                        "fix": "In Server Settings, Roles, drag the AltWarden role above it. Discord only lets an app give roles below its own."})
         return
@@ -105,7 +129,7 @@ def _check_role(guild, label: str, role_id, issues: list, ok: list, *, must_ment
 def _check_channel(guild, label: str, channel_id, issues: list, ok: list, extra: tuple = (), feature: str | None = None) -> None:
     channel = _channel(guild, channel_id)
     if channel is None:
-        issues.append({"area": "channels", "feature": feature, "title": f"{label} is missing", "fix": f"Pick a {label.lower()} on the Settings page."})
+        issues.append({"area": "channels", "feature": feature, "title": f"{label} is missing", "fix": f"Pick a {label.lower()} on the Rules page."})
         return
     held = guild.channel_permissions.get(channel_id, frozenset())
     missing = [name for name in ("view_channel", "send_messages", "embed_links") + extra if name not in held and "administrator" not in held]
@@ -116,7 +140,34 @@ def _check_channel(guild, label: str, channel_id, issues: list, ok: list, extra:
     ok.append({"area": "channels", "label": label, "value": channel["name"]})
 
 
-def report(guild, settings: dict) -> dict:
+def _raid_tells_nobody(settings: dict) -> bool:
+    """A raid posts to the raid and general logs, so with neither set it starts and ends without a word."""
+    logs = settings["core"]["logs"]
+    return settings["raid"]["enabled"] and not (logs["enabled"] and (logs["modules"].get("raid") or logs["modules"].get("general")))
+
+
+def _notices(guild, settings: dict) -> list[dict]:
+    """What staff should know, and doesn't stop anything working, so it leaves the server healthy."""
+    found = []
+    expected = {settings["core"]["channel"]}
+    if settings["honeypot"]["enabled"]:
+        expected.add(settings["honeypot"]["channel"])  # a trap only works if people can see it
+    public = [channel for channel_id in guild.public_channels if channel_id not in expected and (channel := _channel(guild, channel_id))]
+    if public:
+        names = ", ".join(f"#{channel['name']}" for channel in public[:PUBLIC_CHANNELS_SHOWN])
+        more = len(public) - PUBLIC_CHANNELS_SHOWN
+        found.append({"title": "@everyone can read channels beyond the verification channel",
+                      "fix": f"People who haven't verified can read {names}{f' and {more} more' if more > 0 else ''}. "
+                             "To keep them out, deny View Channel to @everyone there and allow it for the verified role."})
+    geogate = settings["checks"]["geogate"]
+    if geogate["enabled"] and settings["core"]["mode"] in BY_ID["geogate"].modes and not settings["checks"]["vpn"]["enabled"]:
+        found.append({"title": "A country rule is on and the VPN check is off",
+                      "fix": "A VPN changes the country AltWarden sees. Turn on the VPN check on the Rules page."})
+    return found
+
+
+def report(guild, settings: dict, *, verify_post=POST_UNKNOWN) -> dict:
+    """What's stopping verification here. `verify_post` is the guild row's `verify_message_id`, for a server that's set up."""
     issues: list[dict] = []
     ok: list[dict] = []
     core = settings["core"]
@@ -136,12 +187,27 @@ def report(guild, settings: dict) -> dict:
         for role_id in dict.fromkeys(core["alerts"]["roles"].values()):
             _check_role(guild, "Alert role", role_id, issues, ok, must_mention=True)
     _check_channel(guild, "Verification channel", core["channel"], issues, ok)
+    if verify_post is None:
+        issues.append({"area": "channels", "title": "The verification message isn't posted",
+                       "fix": "Members with closed DMs have no button to press. Run /post-message to post it again."})
+    if _raid_tells_nobody(settings):
+        issues.append({"area": "raid", "title": "Raid mode can't tell staff",
+                       "fix": "Turn on logs on the Rules page and pick a channel for Raid alerts or Staff actions, or turn raid mode off."})
+    if settings["raid"]["enabled"] and settings["raid"]["alert_role"]:
+        _check_role(guild, "Raid alert role", settings["raid"]["alert_role"], issues, ok, must_mention=True)
+    appeals = settings["appeals"]
+    if appeals["enabled"]:
+        if appeals["channel"]:
+            _check_channel(guild, "Appeals channel", appeals["channel"], issues, ok)
+        if appeals["role"]:
+            _check_role(guild, "Appeals role", appeals["role"], issues, ok, must_mention=True)
     if core["logs"]["enabled"]:
         for channel_id in dict.fromkeys(core["logs"]["modules"].values()):
             _check_channel(guild, "Logs channel", channel_id, issues, ok)
     pot = settings["honeypot"]
     if pot["enabled"]:
-        _check_channel(guild, "Honeypot channel", pot["channel"], issues, ok, ("manage_messages", "pin_messages"), feature="honeypot")
+        # Manage Threads, because a post in a private thread under the trap can't be seen without it.
+        _check_channel(guild, "Honeypot channel", pot["channel"], issues, ok, ("manage_messages", "pin_messages", "manage_threads"), feature="honeypot")
     desk = core["help_desk"]
     if desk["enabled"]:
         _check_role(guild, "Support role", desk["support_role"], issues, ok, must_mention=True, feature="help_desk")
@@ -152,7 +218,41 @@ def report(guild, settings: dict) -> dict:
         for name in ("create_private_threads", "send_messages_in_threads", "manage_threads", "pin_messages"):
             if name not in held and "administrator" not in held:
                 issues.append({"area": "help_desk", "feature": "help_desk", "title": f"Help desk needs {PERMISSION_LABELS[name]}", "fix": "Allow it for AltWarden in the verification channel."})
-    return {"healthy": not issues, "issues": issues, "ok": ok, "needs": needs, "has_administrator": "administrator" in guild.bot_permissions}
+    return {"healthy": not issues, "issues": issues, "ok": ok, "needs": needs, "has_administrator": "administrator" in guild.bot_permissions,
+            "notices": _notices(guild, settings)}
+
+
+async def full_report(service, guild_id: str, guild, settings: dict) -> dict:
+    """The report, plus what only the running service knows: the Verify post, a refused outside lookup, and the network lists.
+
+    The Health page, /health and the dashboard's red dot all use this, so they can't disagree.
+    """
+    row = await service.db.guild(guild_id)
+    data = report(guild, settings, verify_post=row["verify_message_id"] if row and row["setup_done"] else POST_UNKNOWN)
+    refused = service.lookup_refused(guild_id)
+    lists = service.net.list_status()
+    if refused:
+        data["notices"].append({"title": "The outside VPN lookup isn't answering",
+                                "fix": f"Members are getting through without it until it does. proxycheck.io said: {refused['message']}"})
+    if not service.net.ready and not settings["core"]["fail_open"] and settings["core"]["mode"] == WEB:
+        # The web check refuses every member in this state, so it's a fault and not something to know about.
+        data["issues"].append({"area": "lists", "title": "Members can't verify until the network lists load",
+                               "fix": "AltWarden tries again every hour. To let members through until then, turn on Let members through if network data is missing on the Rules page."})
+        data["healthy"] = False
+    elif not service.net.ready and settings["core"]["mode"] == WEB:
+        data["notices"].append({"title": "The network lists haven't loaded yet",
+                                "fix": "VPN and country checks can't run until they do. Members aren't stopped over this. AltWarden tries again every hour."})
+    never = [row["name"] for row in lists if row["age_days"] is None or not row["rows"]]
+    old = [row["name"] for row in lists if row["name"] not in never and row["age_days"] > REFRESH_SECONDS / 86400]
+    if old:
+        data["notices"].append({"title": "Some network lists are out of date",
+                                "fix": f"AltWarden tries again every hour, and uses its last good copy until then. Out of date: {', '.join(old)}."})
+    if never and service.net.ready:
+        data["notices"].append({"title": "Some network lists haven't downloaded",
+                                "fix": f"VPN and country checks may miss some connections until they do. AltWarden tries again every hour. Not downloaded yet: {', '.join(never)}."})
+    data["lookup_refused"] = refused
+    data["lists"] = lists
+    return data
 
 
 def feature_warnings(guild, settings: dict) -> dict[str, list[str]]:
@@ -179,16 +279,27 @@ def channel_refusals(guild, before: dict | None, after: dict) -> list[dict]:
     server's owner could make AltWarden post, and ping, in another server.
     """
     old = {channel for _, channel, _ in _chosen_channels(before)} if before else set()
-    known = {channel["id"] for channel in guild.channels}
+    known = {channel["id"] for channel in guild.channels if channel["type"] in POSTABLE_CHANNELS}
     return [{"text": f"{label}: that channel isn't in this server.", "item": item}
             for label, channel, item in _chosen_channels(after) if channel and channel not in old and channel not in known]
+
+
+def _pinged_roles(settings: dict) -> list[tuple[str, str, str]]:
+    """Roles AltWarden pings or exempts, with a label and the setting that holds each one. It hands none of them out."""
+    core = settings["core"]
+    return [*(("Alert role", role_id, "core") for role_id in core["alerts"]["roles"].values()),
+            ("Support role", core["help_desk"]["support_role"], "core"),
+            ("Raid alert role", settings["raid"]["alert_role"], "raid"),
+            ("Appeals role", settings["appeals"]["role"], "appeals"),
+            *(("Honeypot exempt role", role_id, "honeypot") for role_id in settings["honeypot"]["whitelist_roles"])]
 
 
 def role_refusals(guild, before: dict | None, after: dict, viewer) -> list[dict]:
     """Newly chosen roles a save must refuse.
 
     A member with Manage Server must not be able to hand out a role above their own, or they could
-    give themselves that role by verifying. Roles that were already set are left alone.
+    give themselves that role by verifying. A role that only gets pinged has to be a real role here,
+    and not @everyone, whose ID is the server's. Roles that were already set are left alone.
     """
     old = {role_id for _, role_id, _ in given_roles(before)} if before else set()
     own_top = max((role["position"] for role in guild.roles if role["id"] in viewer.role_ids), default=0)
@@ -201,11 +312,19 @@ def role_refusals(guild, before: dict | None, after: dict, viewer) -> list[dict]
             text = f"{label}: that role no longer exists."
         elif role["managed"] or role["id"] == guild.id:
             text = f"{label}: pick a regular role. @everyone and roles owned by other apps can't be given out."
-        elif role["position"] >= guild.bot_top_role:
+        elif _at_or_above_bot(guild, role):
             text = f"{label}: drag AltWarden's role above {role['name']} in Server Settings first."
         elif not viewer.is_admin and role["position"] >= own_top:
             text = f"{label}: pick a role below your own highest role."
         else:
             continue
         refused.append({"text": text, "item": item})
+    old = {role_id for _, role_id, _ in _pinged_roles(before)} if before else set()
+    for label, role_id, item in _pinged_roles(after):
+        if not role_id or role_id in old:
+            continue
+        if role_id == guild.id:
+            refused.append({"text": f"{label}: pick a regular role. @everyone can't be used here.", "item": item})
+        elif _role(guild, role_id) is None:
+            refused.append({"text": f"{label}: that role no longer exists.", "item": item})
     return refused

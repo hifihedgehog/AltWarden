@@ -249,12 +249,12 @@ class Hostile(unittest.TestCase):
         self.assertTrue(self.phone("SM-S918U", "NVIDIA GeForce RTX 3080").emulated)
 
     def test_randomized_canvas_means_different_things_by_engine(self):
-        for agent, vendor, length in (("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0", "", 37),
-                                      ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", "Apple Computer, Inc.", 37)):
+        for agent, vendor, length, private in (("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0", "", 37, True),
+                                               ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", "Apple Computer, Inc.", 37, False)):
             platform = "Win32" if "Windows" in agent else "MacIntel"
             verdict = judge(clean_report(nav={"ua": agent, "platform": platform, "vendor": vendor, "cores": 8}, uad={}, gpu={"renderer": ""},
                                          eng={"evalLen": length}, canvas={"noisy": True, "blocked": False}, worker={}), agent)
-            self.assertTrue(verdict.privacy, agent)
+            self.assertEqual(verdict.privacy, private, agent)
             self.assertFalse(verdict.antidetect, agent)
 
     def test_real_phone_is_not_an_emulator(self):
@@ -331,7 +331,7 @@ class AltMatching(unittest.IsolatedAsyncioTestCase):
         await self.seed("10", ip="i1")
         links = await self.links({"ip": "i1"})
         self.assertEqual(links[0].confidence, "possible")
-        self.assertIsNone(altmatch.strongest(links, "likely"))
+        self.assertEqual(altmatch.counting(links, "likely"), [])
 
     async def test_fingerprint_plus_connection_is_likely(self):
         await self.seed("10", fingerprint="f1", ip="i1")
@@ -527,8 +527,8 @@ class Engine(unittest.TestCase):
         doc = settings.apply_preset(settings.defaults(), "gentle")
         tightened = engine.effective_settings(doc, True)
         self.assertEqual(tightened["checks"]["account_age"]["action"], "kick")
-        self.assertEqual(tightened["checks"]["vpn"]["action"], "deny")
-        self.assertEqual(doc["checks"]["vpn"]["action"], "watch")
+        self.assertEqual((tightened["checks"]["vpn"]["enabled"], tightened["checks"]["vpn"]["action"]), (True, "deny"))
+        self.assertFalse(doc["checks"]["vpn"]["enabled"])
         self.assertIs(engine.effective_settings(doc, False), doc)
 
     def test_every_failure_has_text_and_a_help_page(self):
@@ -627,18 +627,18 @@ def proxycheck_answer(ip, **detections):
 
 
 class OutsideLookup(unittest.IsolatedAsyncioTestCase):
-    async def test_proxy_vpn_and_tor_count(self):
-        for name in ("proxy", "vpn", "tor"):
-            self.assertIs(await external_lookup(FakeSession(proxycheck_answer("1.2.3.4", **{name: True})), "1.2.3.4", "k"), True, name)
+    async def test_proxy_vpn_tor_and_hosting_count(self):
+        for name in ("proxy", "vpn", "tor", "hosting"):
+            self.assertIs((await external_lookup(FakeSession(proxycheck_answer("1.2.3.4", **{name: True})), "1.2.3.4", "k"))[name], True, name)
 
     async def test_a_clean_address_doesnt(self):
-        self.assertIs(await external_lookup(FakeSession(proxycheck_answer("1.2.3.4")), "1.2.3.4", "k"), False)
+        self.assertFalse(any((await external_lookup(FakeSession(proxycheck_answer("1.2.3.4")), "1.2.3.4", "k")).values()))
 
     async def test_anonymous_alone_doesnt_count_because_googles_dns_has_it(self):
-        self.assertIs(await external_lookup(FakeSession(proxycheck_answer("8.8.8.8", anonymous=True, risk=100)), "8.8.8.8", "k"), False)
+        self.assertFalse(any((await external_lookup(FakeSession(proxycheck_answer("8.8.8.8", anonymous=True, risk=100)), "8.8.8.8", "k")).values()))
 
     async def test_ipv6_works_whatever_form_the_answer_uses(self):
-        self.assertIs(await external_lookup(FakeSession(proxycheck_answer("2606:4700::1", vpn=True)), "2606:4700:0::1", "k"), True)
+        self.assertIs((await external_lookup(FakeSession(proxycheck_answer("2606:4700::1", vpn=True)), "2606:4700:0::1", "k"))["vpn"], True)
 
     async def test_the_key_is_sent_only_when_there_is_one(self):
         session = FakeSession(proxycheck_answer("1.2.3.4"))

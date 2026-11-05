@@ -19,6 +19,8 @@ from altwarden.service import Result
 from fakes import CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, VERIFIED_ROLE
 from test_flow import Base
 
+STAFF_ROLE = "970000000000000070"
+
 
 class Rank:
     """Compares like a discord.Role does, by position."""
@@ -71,7 +73,9 @@ class Client(Base):
         self.bot = AltWardenBot()
         self.bot.service = self.service
         self.bot.gateway = self.port
-        self.port.info = lambda user: MemberInfo(GUILD, str(user.id), user.name, None, False, (), frozenset(user.perms), user.owner)
+        # Staff rank above the members they act on, unless a test says otherwise, since commands now ask.
+        self.port.extra_roles = [{"id": STAFF_ROLE, "name": "Staff", "color": 0, "position": 4, "managed": False, "mentionable": False}]
+        self.port.info = lambda user: MemberInfo(GUILD, str(user.id), user.name, None, False, getattr(user, "role_ids", (STAFF_ROLE,)), frozenset(user.perms), user.owner)
 
     async def asyncTearDown(self):
         await self.bot.close()
@@ -91,12 +95,14 @@ class CommandList(Client):
         return {command.name: command.to_dict(self.bot.tree) for command in self.bot.tree.get_commands()}
 
     async def test_staff_commands_ask_for_the_permission_their_rule_needs(self):
-        manage_guild, manage_roles = 1 << 5, 1 << 28
+        administrator, kick_members, manage_guild, manage_roles = 1 << 3, 1 << 1, 1 << 5, 1 << 28
         sent = self.sent()
         for name in ("verify-user", "reset-user", "create-bypass", "trust-accounts", "lookup", "Verify", "Reset", "Create Bypass", "Lookup"):
             self.assertEqual(sent[name]["default_member_permissions"], manage_roles, name)
-        for name in ("setup", "settings", "post-message", "health", "uninstall", "raid"):
+        for name in ("setup", "settings", "post-message", "health"):
             self.assertEqual(sent[name]["default_member_permissions"], manage_guild, name)
+        self.assertEqual(sent["uninstall"]["default_member_permissions"], administrator)
+        self.assertEqual(sent["raid"]["default_member_permissions"], manage_guild | kick_members)
         self.assertEqual(sent["import-members"]["default_member_permissions"], manage_guild | manage_roles)
 
     async def test_member_commands_stay_listed_for_everyone(self):
@@ -280,11 +286,11 @@ class EverydayCommands(Client):
     async def test_post_message_says_when_it_failed(self):
         self.bot.post_message = AsyncMock(return_value=False)
         interaction = fake_interaction()
-        await self.command("post-message")(interaction, SimpleNamespace(value="honeypot"))
+        await self.command("post-message")(interaction, SimpleNamespace(value="verification"))
         self.assertIn("Couldn't post", said(interaction))
 
     async def test_uninstall_asks_first_and_cancel_changes_nothing(self):
-        interaction = fake_interaction()
+        interaction = fake_interaction(perms=("administrator",))
         await self.command("uninstall")(interaction)
         view = interaction.said[0][1]["view"]
         self.assertEqual(view.timeout, 60)
@@ -294,9 +300,9 @@ class EverydayCommands(Client):
     async def test_uninstall_removes_the_posts_and_every_record(self):
         await self.db.set_guild_field(GUILD, "verify_message_id", f"{CHANNEL}:555")
         await self.db.touch_member(GUILD, OLD_USER)
-        interaction = fake_interaction()
+        interaction = fake_interaction(perms=("administrator",))
         await self.command("uninstall")(interaction)
-        await interaction.said[0][1]["view"].confirm.callback(fake_interaction())
+        await interaction.said[0][1]["view"].confirm.callback(fake_interaction(perms=("administrator",)))
         self.assertIn(("delete_message", CHANNEL, "555"), self.port.calls)
         self.assertIsNone(await self.db.guild(GUILD))
         self.assertIsNone(await self.db.member(GUILD, OLD_USER))
@@ -400,7 +406,7 @@ class Hooks(Client):
         await self.service.save_settings(GUILD, document)
         message = SimpleNamespace(
             guild=SimpleNamespace(id=int(GUILD)), id=7, webhook_id=None, is_system=lambda: False,
-            author=SimpleNamespace(id=int(OTHER_USER), name="spam", roles=()),
+            author=SimpleNamespace(id=int(OTHER_USER), name="spam", roles=(), bot=False),
             channel=SimpleNamespace(id=99999999999999999, parent_id=int(LOG_CHANNEL)))
         await self.bot.on_message(message)
         self.assertTrue(self.port.did("delete_message"))
@@ -411,7 +417,7 @@ class Hooks(Client):
         await self.service.save_settings(GUILD, document)
         message = SimpleNamespace(
             guild=SimpleNamespace(id=int(GUILD)), id=7, webhook_id=None, is_system=lambda: True,
-            author=SimpleNamespace(id=int(STAFF), name="staff", roles=()),
+            author=SimpleNamespace(id=int(STAFF), name="staff", roles=(), bot=False),
             channel=SimpleNamespace(id=int(LOG_CHANNEL), parent_id=None))
         await self.bot.on_message(message)
         self.assertFalse(self.port.did("ban"))

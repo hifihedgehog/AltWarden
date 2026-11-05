@@ -2,10 +2,12 @@
 //   FingerprintJS  the browser identifier
 //   BotD           automation detection
 //   detectIncognito private window detection
+// They sit in vendor/ under neutral names (a-, b-, c-), so a filter list can't block them by name and fail a member
+// for what the list does by accident. THIRD_PARTY.md says which is which.
 // The rest compares what the browser says about itself in different places. A real browser agrees
 // with itself, and a spoofed one usually doesn't. Nothing here leaves this site.
 
-const started = performance.now();
+const started = read(() => performance.now()) ?? 0;
 const activity = { pointer: 0, keys: 0, touches: 0, scrolls: 0 };
 addEventListener("pointermove", () => activity.pointer++, { passive: true });
 addEventListener("keydown", () => activity.keys++, { passive: true });
@@ -14,6 +16,33 @@ addEventListener("scroll", () => activity.scrolls++, { passive: true });
 
 const within = (promise, ms, fallback = null) =>
   Promise.race([Promise.resolve(promise).catch(() => fallback), new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
+
+// One part of the report. A part that throws still sends its section, marked as failed, so the server
+// can tell a browser with one broken API from a script that left the section out.
+function section(build) {
+  try {
+    return build();
+  } catch {
+    return { failed: true };
+  }
+}
+
+// One value in a section where the other values are still worth having.
+function read(get) {
+  try {
+    return get();
+  } catch {
+    return null;
+  }
+}
+
+// Runs a vendored library and says why it gave nothing. `blocked`, which the run itself returns, means the
+// file never arrived: that's a blocker, and the server treats it as hiding details. `timeout` means a slow
+// device and `failed` means the library threw, and neither is the member's doing.
+function library(run, ms) {
+  const work = new Promise((resolve) => resolve(run())).catch(() => ({ failed: true }));
+  return within(work, ms, { timeout: true });
+}
 
 function isNativeSource(source, name) {
   return source === `function ${name}() { [native code] }` ||
@@ -91,7 +120,7 @@ function detectLies() {
         if (lies.length) {
           report.total++;
           report.apis.push(`${label}.${name}`);
-          // A Proxy alone doesn't count here. Privacy extensions use them, and a server's Watch on those has to hold.
+          // Only a wrapper that also hides its source counts. Privacy extensions wrap functions without hiding it.
           if (lies.includes("constructor") && !lies.includes("source")) report.proxy = true;
         }
       }
@@ -134,16 +163,18 @@ function canvasCheck() {
   }
 }
 
+// Only a working context without the debug extension is hiding anything. A machine with no WebGL at
+// all, a failed context or a lost graphics process hid nothing.
 function graphics() {
   try {
     const gl = document.createElement("canvas").getContext("webgl");
-    if (!gl) return { vendor: "", renderer: "", hidden: true };
+    if (!gl) return { renderer: "", hidden: false };
     const info = gl.getExtension("WEBGL_debug_renderer_info");
     return info
-      ? { vendor: String(gl.getParameter(info.UNMASKED_VENDOR_WEBGL)), renderer: String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)), hidden: false }
-      : { vendor: String(gl.getParameter(gl.VENDOR)), renderer: String(gl.getParameter(gl.RENDERER)), hidden: true };
+      ? { renderer: String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)), hidden: false }
+      : { renderer: String(gl.getParameter(gl.RENDERER)), hidden: true };
   } catch {
-    return { vendor: "", renderer: "", hidden: true };
+    return { renderer: "", hidden: false };
   }
 }
 
@@ -176,6 +207,25 @@ function isGecko() {
   return signs.filter(Boolean).length >= 4;
 }
 
+// Chromium's plugin list is fixed by the HTML standard. Brave's Shields replace or add to it (brave-core,
+// dom_plugin_array.cc, FarblePlugins), and leave it alone when they're down.
+const PDF_PLUGINS = new Set(["PDF Viewer", "Chrome PDF Viewer", "Chromium PDF Viewer", "Microsoft Edge PDF Viewer", "WebKit built-in PDF"]);
+
+// CreepJS's getBraveMode. Its plugin test counts two known names, which is out of date now that Chromium lists five,
+// so this asks instead whether any name is one Chromium doesn't list.
+function braveMode() {
+  try {
+    const context = new OfflineAudioContext(1, 1, 44100);
+    const analyser = context.createAnalyser();
+    const data = new Float32Array(analyser.frequencyBinCount);
+    analyser.getFloatFrequencyData(data);
+    if (new Set(data).size > 1) return "strict";  // the real thing only has -Infinity here
+    return [...navigator.plugins].some((plugin) => !PDF_PLUGINS.has(plugin.name)) ? "standard" : "allow";
+  } catch {
+    return "unknown";
+  }
+}
+
 async function privacyState(gpu) {
   const state = { gpuHidden: gpu.hidden };
   try {
@@ -183,6 +233,7 @@ async function privacyState(gpu) {
   } catch {
     state.brave = false;
   }
+  if (state.brave) state.braveMode = braveMode();
   // With resistFingerprinting on, Firefox names its graphics "Mozilla". Newer versions clamp the
   // clock too finely for the digit test, so the name goes first.
   if (isGecko() && (gpu.renderer === "Mozilla" || await clockIsClamped())) {
@@ -207,15 +258,14 @@ export function developerTools() {
     slowestLog = Math.max(slowestLog, time(() => console.log(rows)), time(() => console.log(rows)));
     if (slowestLog > 0 && tableTime > slowestLog * 10) agreed++;
   }
-  console.clear();
-  return { timing: agreed === 3 };
+  return { timing: agreed === 3 };  // the console isn't cleared, because someone helping a member may need what's in it
 }
 
 async function userAgentData() {
   const data = navigator.userAgentData;
   if (!data) return null;
-  const extra = await within(data.getHighEntropyValues(["architecture", "bitness", "model", "platformVersion", "uaFullVersion"]), 500, {});
-  return { brands: data.brands, mobile: data.mobile, platform: data.platform, ...extra };
+  const { architecture, model, platformVersion } = await within(data.getHighEntropyValues(["architecture", "model", "platformVersion"]), 500, {});
+  return { platform: data.platform, architecture, model, platformVersion };
 }
 
 function timeZone() {
@@ -235,41 +285,56 @@ function timeZone() {
   return { name, offset: now.getTimezoneOffset(), intlOffset };
 }
 
+function navigatorFacts() {
+  const facts = {
+    ua: read(() => navigator.userAgent), platform: read(() => navigator.platform), vendor: read(() => navigator.vendor), webdriver: read(() => navigator.webdriver),
+    cores: read(() => navigator.hardwareConcurrency), memory: read(() => navigator.deviceMemory), touch: read(() => navigator.maxTouchPoints),
+    pdf: read(() => navigator.pdfViewerEnabled), modern: read(() => CSS.supports("border-end-end-radius: initial")),
+  };
+  if (typeof facts.ua !== "string") facts.failed = true;
+  return facts;
+}
+
+// Every section the server requires is built through section() or has its own catch, so nothing a
+// browser does here can leave one out or stop the report going. scripts/detector_controls.py breaks each API to show it.
 export async function collect() {
   const gpu = graphics();
   // Which detectors fired goes along too, because one of them alone is ordinary on a real browser.
-  const botd = within(import("/static/vendor/botd-2.0.0.esm.js").then((module) => module.load()).then((detector) => {
+  const botd = library(() => import("/static/vendor/b-2.0.0.esm.js").then(async (module) => {
+    const detector = await module.load({ monitoring: false });
     const verdict = detector.detect();
     return { ...verdict, fired: Object.entries(detector.getDetections() ?? {}).filter(([, found]) => found.bot).map(([name]) => name) };
-  }), 2500);
-  const fingerprint = within(window.FingerprintJS?.load({ monitoring: false }).then((agent) => agent.get()), 4000);
-  const privateWindow = within(window.detectIncognito?.detectIncognito?.() ?? window.detectIncognito?.(), 2000);
+  }, () => ({ blocked: true })), 2500);
+  const fingerprint = library(async () => {
+    if (!window.FingerprintJS) return { blocked: true };
+    const agent = await window.FingerprintJS.load({ monitoring: false });
+    return { id: (await agent.get()).visitorId };
+  }, 4000);
+  const privateWindow = library(async () => {
+    const api = window.detectIncognito;
+    if (!api) return { blocked: true };
+    return { isPrivate: (await (api.detectIncognito?.() ?? api())).isPrivate };
+  }, 2000);
   const [uad, worker, privacy, fp, bot, incognito] = await Promise.all([
-    userAgentData(), within(workerView(), 1500), privacyState(gpu), fingerprint, botd, privateWindow,
+    userAgentData().catch(() => null), within(workerView(), 1500), privacyState(gpu).catch(() => ({ failed: true })), fingerprint, botd, privateWindow,
   ]);
-  const connection = navigator.connection;
   return {
-    v: 1,
-    fp: fp ? { id: fp.visitorId, confidence: fp.confidence?.score } : null,
-    bot: bot ?? null,
-    private: incognito ? { isPrivate: incognito.isPrivate, browser: incognito.browserName } : null,
-    nav: {
-      ua: navigator.userAgent, platform: navigator.platform, vendor: navigator.vendor, webdriver: navigator.webdriver,
-      cores: navigator.hardwareConcurrency, memory: navigator.deviceMemory, languages: navigator.languages,
-      touch: navigator.maxTouchPoints, pdf: navigator.pdfViewerEnabled, modern: CSS.supports("border-end-end-radius: initial"),
-    },
+    fp,
+    bot,
+    private: incognito,
+    nav: navigatorFacts(),
     uad,
-    scr: { w: screen.width, h: screen.height, iw: innerWidth, ih: innerHeight, ow: outerWidth, oh: outerHeight, dpr: devicePixelRatio },
-    tz: timeZone(),
-    gpu: { vendor: gpu.vendor, renderer: gpu.renderer },
+    scr: section(() => ({ w: screen.width, h: screen.height })),
+    tz: section(timeZone),
+    gpu: { renderer: gpu.renderer },
     worker,
-    eng: { evalLen: eval.toString().length },
-    lies: detectLies(),
+    eng: section(() => ({ evalLen: eval.toString().length })),
+    lies: section(detectLies),
     canvas: canvasCheck(),
     privacy,
-    devtools: developerTools(),
-    conn: connection ? { type: connection.type, effectiveType: connection.effectiveType } : null,
-    act: { ...activity, ms: Math.round(performance.now() - started), visible: document.visibilityState === "visible" },
+    devtools: section(developerTools),
+    conn: read(() => (navigator.connection ? { type: navigator.connection.type } : null)),
+    act: section(() => ({ ...activity, ms: Math.round(performance.now() - started), visible: document.visibilityState === "visible" })),
   };
 }
 

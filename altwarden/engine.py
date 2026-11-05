@@ -11,6 +11,7 @@ A check set to Watch is recorded and never stops anyone.
 from __future__ import annotations
 
 import copy
+import logging
 import time
 from dataclasses import dataclass, field
 
@@ -18,6 +19,8 @@ from . import altmatch
 from .catalog import BAN, BUTTON, BY_ID, CHECK_IDS, DENY, FAILURE_TEXT, INSTANT, KICK, SEVERITY, WATCH, WEB
 from .netintel import NetInfo
 from .signals import BrowserVerdict
+
+log = logging.getLogger("altwarden.engine")
 
 DISCORD_EPOCH_MS = 1420070400000
 
@@ -81,6 +84,12 @@ class Decision:
         return not self.enforced and self.cooldown_left <= 0
 
     @property
+    def only_unproven_link(self) -> bool:
+        """Whether a link below confirmed is the one thing this attempt failed, leaving the attempt limit aside. Such a link can be planted."""
+        others = [finding for finding in self.enforced if finding.check_id != "max_attempts"]
+        return len(others) == 1 and others[0].check_id == "alt_account" and others[0].detail.get("confidence") != "confirmed"
+
+    @property
     def primary(self) -> Finding | None:
         """The failure that decides the outcome: the strongest action, then the check order."""
         enforced = self.enforced
@@ -117,9 +126,12 @@ def effective_settings(settings: dict, raid_active: bool) -> dict:
     tightened = copy.deepcopy(settings)
     raid = tightened["raid"]
     age = tightened["checks"]["account_age"]
-    age["enabled"] = True
-    age["days"] = max(age["days"], raid["min_account_days"])
-    age["action"] = _at_least(age["action"], KICK)
+    if age["enabled"]:
+        age["days"] = max(age["days"], raid["min_account_days"])
+        age["action"] = _at_least(age["action"], KICK)
+    elif raid["min_account_days"]:
+        # A check that's off keeps an old number, which says nothing about this raid. A minimum of 0 asks for no age rule.
+        age.update(enabled=True, days=raid["min_account_days"], action=_at_least(age["action"], KICK))
     for check_id in ("vpn", "automation", "antidetect"):
         check = tightened["checks"][check_id]
         check["enabled"] = True
@@ -170,22 +182,25 @@ def run_checks(attempt: Attempt, regions: dict | None = None) -> Decision:
     member = attempt.member or {}
     account = attempt.account
 
+    limit = _active(attempt, "max_attempts")
+    used_up = limit is not None and member.get("fails", 0) >= limit["attempts"]
+    # Past a used-up limit that only denies, "try again in a minute" would be a false promise.
+    final = used_up and member.get("limit_reached_at") and (limit["action"] == DENY or member.get("limit_held"))
     cooldown = settings["core"]["cooldown"]
-    if cooldown["enabled"] and "cooldown" not in attempt.bypass and member.get("last_fail_at"):
+    if cooldown["enabled"] and "cooldown" not in attempt.bypass and member.get("last_fail_at") and not final:
         left = member["last_fail_at"] + cooldown["seconds"] - attempt.now
         if left > 0:
             decision.cooldown_left = left
             return decision  # A wait isn't a failure, so nothing else runs and nothing is logged.
 
-    limit = _active(attempt, "max_attempts")
-    if limit is not None and member.get("fails", 0) >= limit["attempts"]:
+    if used_up:
         detail = {"attempts": limit["attempts"]}
         if limit["reset_minutes"] and member.get("limit_reached_at"):
             detail["attempts_back_at"] = member["limit_reached_at"] + limit["reset_minutes"] * 60
         decision.findings.append(Finding("max_attempts", limit["action"], "max_attempts", detail))
 
     age = settings["checks"]["account_age"]
-    _simple(attempt, decision, "account_age", account.age_days < age["days"],
+    _simple(attempt, decision, "account_age", account.age_days < age["days"], reason="account_age_one" if age["days"] == 1 else None,
             detail={"account_days": int(account.age_days), "minimum": age["days"],
                     "old_enough_at": account_created_at(account.id) + age["days"] * 86400},
             text_args={"days": age["days"]})
@@ -223,31 +238,53 @@ def run_checks(attempt: Attempt, regions: dict | None = None) -> Decision:
                 detail={"bot_score": browser.bot_score, "suspect_score": attempt.suspect, "signs": attempt.suspect_hits})
         _simple(attempt, decision, "vm", browser.vm, detail={"signs": reasons.get("vm", [])})
         _simple(attempt, decision, "rooted", browser.emulated, detail={"signs": reasons.get("emulated", [])})
+    others = [finding for finding in decision.enforced if finding.check_id != "max_attempts"]
+    if decision.only_unproven_link or (member.get("limit_held") and not others):
+        # A planted fingerprint mustn't reach a kick through the limit. The hold lasts once those attempts are spent, or the member
+        # would be removed for trying from a clean device. Anything else wrong on the attempt lets the limit act.
+        for finding in decision.findings:
+            if finding.check_id == "max_attempts" and finding.enforced:
+                finding.action = DENY
     return decision
 
 
 def _check_alt(attempt: Attempt, decision: Decision) -> None:
+    """Judge every link at the server's chosen confidence, and let the hardest outcome stand.
+
+    An account can be the alt of one account and the main of another, or the alt of a banned account set
+    to Deny and of a good one set to Kick. Under that confidence, a link to someone who got in or was
+    banned is still worth showing staff, so it's watched: the member gets in and nothing acts on anyone.
+    A link with nothing behind it but the kind of machine isn't worth that, because strangers with one phone
+    model would ping staff. `counting` only ever feeds one of the two branches, so a link is judged once.
+    """
     check = _active(attempt, "alt_account")
     if check is None:
         return
-    link = altmatch.strongest(attempt.links, check["min_confidence"])
-    if link is None:
-        return
-    decision.alt_link = link
-    if link.banned:
-        action, other = check["banned_alt_action"], WATCH
-    elif link.other_is_main:
-        action, other = check["alt_action"], check["main_action"]
+    counted = altmatch.counting(attempt.links, check["min_confidence"])
+    if counted:
+        judged = [(link, *altmatch.judge(check, link.confidence, link.banned, link.other_is_main)) for link in counted]
+        link, action, other, capped = max(judged, key=lambda entry: (SEVERITY[entry[1]], SEVERITY[entry[2]], entry[0].banned, entry[0].score))
     else:
-        # This account verified first, so it's the main one and the other is the alt.
-        action, other = check["main_action"], WATCH
+        nearby = [link for link in altmatch.counting(attempt.links, "possible") if not altmatch.looks_alike_only(link)]
+        if not nearby:
+            return
+        link, action, other, capped = max(nearby, key=lambda entry: (entry.banned, entry.score)), WATCH, WATCH, False
+    decision.alt_link = link
     decision.main_action = other
-    decision.findings.append(Finding("alt_account", action, "alt_account", link.as_dict()))
+    decision.findings.append(Finding("alt_account", action, "alt_account", {**link.as_dict(), **({"capped": True} if capped else {})}))
 
 
 def _check_geogate(attempt: Attempt, decision: Decision, net: NetInfo, regions: dict) -> None:
     check = _active(attempt, "geogate")
-    if check is None or not net.country:
+    if check is None:
+        return
+    if not net.country:
+        # An allow list names who gets in, so an address the loaded lists can't place isn't on it. With no country table
+        # for this kind of address nothing can be placed, and stopping everyone over that isn't the rule's call.
+        if check["list"] == "allow" and net.known:
+            decision.findings.append(Finding("geogate", check["action"], "geogate", {"list": check["list"]}))
+        elif check["list"] == "allow":
+            log.warning("A country allow list couldn't run: no country data for this address")
         return
     action = geogate_action(check, net.country, regions)
     if action is not None:

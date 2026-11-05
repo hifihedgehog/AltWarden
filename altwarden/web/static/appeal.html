@@ -8,12 +8,16 @@
   <link rel="icon" href="/static/img/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/base.css">
   <link rel="stylesheet" href="/static/css/site.css">
+  <noscript><link rel="stylesheet" href="/static/css/noscript.css"></noscript>
   <script type="module" src="/static/js/appeal.js"></script>
   <script src="/static/js/loading-guard.js"></script>
 </head>
 <body>
   <header class="site-header"><a class="brand" href="/"><img src="/static/img/logo.svg" alt="">AltWarden</a></header>
-  <main class="card member-card" id="content"><p>Loading…</p></main>
+  <main class="card member-card" id="content" aria-live="polite">
+    <p id="loading">Loading…</p>
+    <noscript><p>This page needs JavaScript to send an appeal. Turn it on and reload.</p></noscript>
+  </main>
   <footer class="site-footer"><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/help">Help</a></footer>
 </body>
 </html>

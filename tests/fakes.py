@@ -1,9 +1,11 @@
 """A fake Discord for tests: records what the service asked for and answers like the real API."""
 from __future__ import annotations
 
+import asyncio
+
 from aiohttp import web
 
-from altwarden.ports import GuildView, MemberInfo, Notice
+from altwarden.ports import DiscordUnavailable, GuildView, MemberInfo, Notice
 
 GUILD = "970000000000000001"
 VERIFIED_ROLE = "970000000000000002"
@@ -22,10 +24,18 @@ class FakePort:
         self.dms: list[tuple[str, Notice]] = []
         self.sent: list[tuple[str, Notice]] = []
         self.banned: set = set()
-        self.dm_open = True
+        self.dm_open = True          # False is closed DMs, the one failure a member can fix
+        self.dm_fails = False        # any other failure, where dm answers None
         self.role_problem: str | None = None
+        self.role_refusals: dict[str, str] = {}  # one role's problem, for adds and removes
         self.kick_works = True
+        self.ban_works = True
+        self.unban_works = True
+        self.timeout_works = True
+        self.close_works = True
+        self.discord_down = False
         self.next_message = 1000
+        self.threads: list[Notice] = []
         self.loading = False
         self.absent = False
         self.thread_open = True
@@ -39,15 +49,25 @@ class FakePort:
             {"name": "Verify", "id": "900000000000000002", "overrides": [{"type": "role", "id": VERIFIED_ROLE, "allow": False}]}]}
 
     def add_member(self, user_id: str, *, username: str = "someone", avatar: str | None = "abc", roles: tuple = (), perms: tuple = (),
-                   owner: bool = False, bot: bool = False) -> MemberInfo:
-        info = MemberInfo(GUILD, user_id, username, avatar, bot, roles, frozenset(perms), owner)
+                   owner: bool = False, bot: bool = False, pending: bool = False) -> MemberInfo:
+        info = MemberInfo(GUILD, user_id, username, avatar, bot, roles, frozenset(perms), owner, pending)
         self.members[(GUILD, user_id)] = info
         return info
 
     def did(self, name: str) -> list[tuple]:
         return [call for call in self.calls if call[0] == name]
 
-    async def member(self, guild_id, user_id):
+    def forget_member(self, guild_id, user_id):
+        pass
+
+    def forget_guild(self, guild_id):
+        pass
+
+    async def member(self, guild_id, user_id, *, fresh=False):
+        if fresh:
+            self.calls.append(("fresh_member", user_id))
+        if self.discord_down:
+            raise DiscordUnavailable("down")
         return self.members.get((guild_id, user_id))
 
     async def guild_loading(self, guild_id):
@@ -69,8 +89,8 @@ class FakePort:
 
     async def add_role(self, guild_id, user_id, role_id, reason):
         self.calls.append(("add_role", user_id, role_id))
-        if self.role_problem:
-            return self.role_problem
+        if self.role_problem or role_id in self.role_refusals:
+            return self.role_problem or self.role_refusals[role_id]
         member = self.members.get((guild_id, user_id))
         if member is not None:
             member.role_ids = tuple(dict.fromkeys(member.role_ids + (role_id,)))
@@ -78,6 +98,8 @@ class FakePort:
 
     async def remove_role(self, guild_id, user_id, role_id, reason):
         self.calls.append(("remove_role", user_id, role_id))
+        if role_id in self.role_refusals:
+            return self.role_refusals[role_id]
         member = self.members.get((guild_id, user_id))
         if member is not None:
             member.role_ids = tuple(role for role in member.role_ids if role != role_id)
@@ -89,24 +111,34 @@ class FakePort:
 
     async def ban(self, guild_id, user_id, reason, delete_seconds=0):
         self.calls.append(("ban", user_id, reason, delete_seconds))
+        if not self.ban_works:
+            return False
         self.banned.add(user_id)
         return True
 
     async def unban(self, guild_id, user_id, reason):
         self.calls.append(("unban", user_id))
+        if not self.unban_works:
+            return False
         self.banned.discard(user_id)
         return True
 
     async def timeout(self, guild_id, user_id, minutes, reason):
         self.calls.append(("timeout", user_id, minutes))
-        return True
+        return self.timeout_works
+
+    async def clear_timeout(self, guild_id, user_id, reason):
+        self.calls.append(("clear_timeout", user_id))
+        return self.timeout_works
 
     async def is_banned(self, guild_id, user_id):
+        if self.discord_down:
+            raise DiscordUnavailable("down")
         return user_id in self.banned
 
     async def dm(self, user_id, notice):
         self.dms.append((user_id, notice))
-        return self.dm_open
+        return None if self.dm_fails else self.dm_open
 
     async def send(self, channel_id, notice, *, guild_id=None):
         self.sent.append((channel_id, notice))
@@ -128,15 +160,16 @@ class FakePort:
 
     async def open_help_thread(self, channel_id, name, user_id, role_id, notice, *, guild_id=None):
         self.calls.append(("open_help_thread", user_id))
+        self.threads.append(notice)
         return "970000000000000099"
 
-    async def reopen_thread(self, thread_id):
+    async def reopen_thread(self, thread_id, user_id=None):
         self.calls.append(("reopen_thread", thread_id))
         return self.thread_open
 
     async def close_thread(self, thread_id):
         self.calls.append(("close_thread", thread_id))
-        return True
+        return self.close_works
 
     async def apply_profile(self, guild_id, profile, style=None):
         self.calls.append(("apply_profile", profile, style))
@@ -158,6 +191,16 @@ class FakeDiscordApi:
         self.command_writes: list = []
         self.command_write_status = 200
         self.authorizations: list = []
+        self.hanging: set = set()      # endpoints that don't answer in time: token, me, guilds, write
+        self.revoke_hangs = 0          # how many revoke calls hang before one answers
+        self.revoke_status = 200
+        self.revoke_calls = 0
+        self.token_body: str | None = None  # a 200 whose body isn't what Discord documents
+        self.me_body: str | None = None
+
+    async def maybe_hang(self, endpoint):
+        if endpoint in self.hanging:
+            await asyncio.sleep(2)
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -171,12 +214,17 @@ class FakeDiscordApi:
     async def token(self, request):
         form = await request.post()
         self.exchanged.append(dict(form))
+        await self.maybe_hang("token")
+        if self.token_body is not None:
+            return web.Response(text=self.token_body, content_type="application/json")
         if self.fail_exchange:
             return web.json_response({"error": "invalid_grant"}, status=400)
         return web.json_response({"access_token": "fake-access", "refresh_token": "fake-refresh", "token_type": "Bearer", "expires_in": 604800, "scope": "identify"})
 
     async def write_command(self, request):
         self.authorizations.append(request.headers.get("Authorization"))
+        if self.command_writes:  # the first write lands, and the next one can hang
+            await self.maybe_hang("write")
         if self.command_write_status == 429:
             self.command_write_status = 200
             return web.json_response({"retry_after": 0.01}, status=429)
@@ -187,11 +235,21 @@ class FakeDiscordApi:
 
     async def revoke(self, request):
         form = await request.post()
+        self.revoke_calls += 1
+        if self.revoke_hangs > 0:
+            self.revoke_hangs -= 1
+            await asyncio.sleep(2)
+        if self.revoke_status != 200:
+            return web.json_response({"error": "try later"}, status=self.revoke_status)
         self.revoked.append(form["token"])
         return web.json_response({})
 
     async def me(self, request):
+        await self.maybe_hang("me")
+        if self.me_body is not None:
+            return web.Response(text=self.me_body, content_type="application/json")
         return web.json_response(self.user)
 
     async def my_guilds(self, request):
+        await self.maybe_hang("guilds")
         return web.json_response(self.guilds)

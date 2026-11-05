@@ -4,6 +4,8 @@ body { min-height: 100vh; display: flex; flex-direction: column; }
 .verify-who { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 18px; }
 .verify-who img { width: 64px; height: 64px; border-radius: 18px; background: var(--bg-sunken); }
 .verify-card h1 { font-size: 1.35rem; margin-bottom: 6px; }
+.verify-card h1:focus { outline: none; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .verify-card p { color: var(--text-soft); }
 .verify-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
 .verify-actions .button { width: 100%; }

@@ -1,4 +1,4 @@
-"""DiscordPort on top of discord.py. Every call turns a Discord failure into a plain result."""
+"""DiscordPort on top of discord.py. Every call turns a Discord failure into a plain result, or into DiscordUnavailable where "no" and "couldn't say" lead to different actions."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ import aiohttp
 import discord
 from discord.http import Route
 
-from ..ports import MEMBER_GONE, ROLE_TOO_LOW, Button, DiscordUnavailable, GuildView, MemberInfo, Notice
+from ..ports import DISCORD_BUSY, MEMBER_GONE, ROLE_TOO_LOW, Button, DiscordUnavailable, GuildView, MemberInfo, Notice
 
 log = logging.getLogger("altwarden.gateway")
 
@@ -25,6 +25,9 @@ STYLES = {"primary": discord.ButtonStyle.primary, "secondary": discord.ButtonSty
 COMMAND_PERMISSION_NAMES = {1: "role", 2: "user", 3: "channel"}
 CHANNEL_TYPES = {discord.ChannelType.text: "text", discord.ChannelType.news: "news", discord.ChannelType.forum: "forum",
                  discord.ChannelType.voice: "voice", discord.ChannelType.stage_voice: "stage"}
+# Discord's codes for "Cannot send messages to this user" and for an unknown role, from its opcodes and status codes topic.
+CLOSED_DMS = 50007
+UNKNOWN_ROLE = 10011
 
 
 def style_problem(style: dict, member: dict) -> str | None:
@@ -80,11 +83,11 @@ class Gateway:
     def _guild(self, guild_id: str) -> discord.Guild | None:
         return self.client.get_guild(int(guild_id))
 
-    async def _resolve(self, guild_id: str, user_id: str) -> discord.Member | None:
+    async def _resolve(self, guild_id: str, user_id: str, *, fresh: bool = False) -> discord.Member | None:
         guild = self._guild(guild_id)
         if guild is None:
             return None
-        member = guild.get_member(int(user_id))
+        member = None if fresh else guild.get_member(int(user_id))
         if member is not None:
             return member
         try:
@@ -97,17 +100,38 @@ class Gateway:
     def forget_member(self, guild_id: str, user_id: str) -> None:
         self._members.pop((guild_id, user_id), None)
 
+    def forget_guild(self, guild_id: str) -> None:
+        """A role or channel changed, which can change the server's view and what any member is allowed to do."""
+        self._guilds.pop(guild_id, None)
+        for key in [key for key in self._members if key[0] == guild_id]:
+            del self._members[key]
+
     def info(self, member: discord.Member) -> MemberInfo:
         return MemberInfo(str(member.guild.id), str(member.id), member.name, member.avatar.key if member.avatar else None, member.bot,
                           tuple(str(role.id) for role in member.roles), permission_names(member.guild_permissions),
-                          member.guild.owner_id == member.id)
+                          member.guild.owner_id == member.id, member.pending)
 
-    async def member(self, guild_id: str, user_id: str) -> MemberInfo | None:
+    async def member(self, guild_id: str, user_id: str, *, fresh: bool = False) -> MemberInfo | None:
+        """Who this is in that server, or None if they aren't in it. Raises DiscordUnavailable if Discord can't say.
+
+        discord.py's copy comes first, because the gateway keeps it current. An answer fetched earlier spares a
+        call for those outside that copy. `fresh` asks Discord itself, for a decision that shouldn't rest on either.
+        """
+        guild = self._guild(guild_id)
+        if guild is None or guild.unavailable:
+            # Discord hasn't handed the server over, so its members have no roles yet. Nothing from this moment is worth keeping.
+            if guild is not None or not self.client.is_ready():
+                raise DiscordUnavailable("still loading")
+            return None
         key = (guild_id, user_id)
-        cached = self._members.get(key)
-        if cached and time.monotonic() - cached[0] < MEMBER_CACHE_SECONDS:
-            return cached[1]
-        member = await self._resolve(guild_id, user_id)
+        if not fresh:
+            live = guild.get_member(int(user_id))
+            if live is not None:
+                return self.info(live)
+            cached = self._members.get(key)
+            if cached and time.monotonic() - cached[0] < MEMBER_CACHE_SECONDS:
+                return cached[1]
+        member = await self._resolve(guild_id, user_id, fresh=fresh)
         info = self.info(member) if member else None
         self._members[key] = (time.monotonic(), info)
         if len(self._members) > 20000:
@@ -132,6 +156,9 @@ class Gateway:
                       for channel in guild.channels if channel.type in CHANNEL_TYPES],
             bot_permissions=permission_names(me.guild_permissions), bot_top_role=me.top_role.position,
             channel_permissions={str(channel.id): permission_names(channel.permissions_for(me)) for channel in guild.channels},
+            bot_top_role_id=str(me.top_role.id),
+            public_channels=[str(channel.id) for channel in guild.channels
+                             if channel.type in CHANNEL_TYPES and channel.permissions_for(guild.default_role).view_channel],
         )
         self._guilds[guild_id] = (time.monotonic(), view)
         return view
@@ -150,14 +177,16 @@ class Gateway:
     async def _role(self, guild_id: str, user_id: str, role_id: str, reason: str, *, add: bool) -> str | None:
         guild = self._guild(guild_id)
         if guild is None:
-            return "AltWarden isn't in that server."
+            return "AltWarden isn't in that server." if self.client.is_ready() else DISCORD_BUSY
+        if guild.unavailable:  # it has no roles yet, which mustn't read as the role having been deleted
+            return DISCORD_BUSY
         role = guild.get_role(int(role_id or 0))
         if role is None:
             return "That role no longer exists."
         try:
             member = await self._resolve(guild_id, user_id)
         except DiscordUnavailable:
-            return "Discord didn't answer. Try again in a moment."
+            return DISCORD_BUSY
         if member is None:
             return MEMBER_GONE
         if guild.me is not None and role >= guild.me.top_role:
@@ -169,10 +198,12 @@ class Gateway:
                 await member.remove_roles(role, reason=reason)
         except discord.Forbidden:
             return "AltWarden needs Manage Roles, and its role must sit above the role it gives."
+        except discord.NotFound as exc:  # they left, or someone deleted the role, since the checks above
+            return "That role no longer exists." if exc.code == UNKNOWN_ROLE else MEMBER_GONE
         except discord.HTTPException as exc:
             return f"Discord refused the role change ({exc.status})."
         except FAILED:
-            return "Discord didn't answer. Try again in a moment."
+            return DISCORD_BUSY
         self.forget_member(guild_id, user_id)
         return None
 
@@ -182,6 +213,9 @@ class Gateway:
             await guild.kick(discord.Object(int(user_id)), reason=reason)
             self.forget_member(guild_id, user_id)
             return True
+        except discord.NotFound:
+            self.forget_member(guild_id, user_id)
+            return True  # they already left, which is the outcome that was wanted
         except (*FAILED, AttributeError) as exc:
             log.warning("Kick failed in %s: %s", guild_id, exc)
             return False
@@ -216,25 +250,39 @@ class Gateway:
         except (*FAILED, DiscordUnavailable):
             return False
 
+    async def clear_timeout(self, guild_id: str, user_id: str, reason: str) -> bool:
+        try:
+            member = await self._resolve(guild_id, user_id)
+            if member is None:
+                return False
+            await member.timeout(None, reason=reason)
+            return True
+        except (*FAILED, DiscordUnavailable):
+            return False
+
     async def is_banned(self, guild_id: str, user_id: str) -> bool:
+        """Whether Discord has this ban. Raises DiscordUnavailable if it can't say, because a "no" clears AltWarden's own ban record."""
         guild = self._guild(guild_id)
         if guild is None:
-            return False
+            raise DiscordUnavailable("that server isn't loaded")
         try:
             await guild.fetch_ban(discord.Object(int(user_id)))
             return True
-        except (discord.NotFound, discord.Forbidden):  # no ban, or no Ban Members to see one, which AltWarden only needs if it bans
+        except discord.NotFound:
             return False
-        except FAILED as exc:
+        except FAILED as exc:  # a 403 means AltWarden has no Ban Members, which says nothing about the ban
             raise DiscordUnavailable(str(exc)) from exc
 
-    async def dm(self, user_id: str, notice: Notice) -> bool:
+    async def dm(self, user_id: str, notice: Notice) -> bool | None:
+        """True delivered, False their DMs are closed, None any other failure, which a member can't fix by opening them."""
         try:
             user = self.client.get_user(int(user_id)) or await self.client.fetch_user(int(user_id))
             await user.send(**to_kwargs(notice))
             return True
+        except discord.HTTPException as exc:
+            return False if exc.code == CLOSED_DMS else None
         except FAILED:
-            return False
+            return None
 
     def _channel(self, channel_id: str):
         return self.client.get_channel(int(channel_id))
@@ -250,7 +298,7 @@ class Gateway:
         try:
             message = await channel.send(delete_after=notice.delete_after, **to_kwargs(notice))
             return str(message.id)
-        except FAILED as exc:
+        except (*FAILED, AttributeError) as exc:  # a forum or category channel has no send
             log.warning("Couldn't post in %s: %s", channel_id, exc)
             return None
 
@@ -261,7 +309,9 @@ class Gateway:
         try:
             await channel.get_partial_message(int(message_id)).delete()
             return True
-        except FAILED:
+        except discord.NotFound:
+            return True  # someone else deleted it first, which is the outcome that was wanted
+        except (*FAILED, AttributeError):
             return False
 
     async def edit_message(self, channel_id: str, message_id: str, notice: Notice) -> bool:
@@ -273,7 +323,7 @@ class Gateway:
         try:
             await channel.get_partial_message(int(message_id)).edit(**kwargs)
             return True
-        except FAILED:
+        except (*FAILED, AttributeError):
             return False
 
     async def pin(self, channel_id: str, message_id: str) -> bool:
@@ -283,13 +333,14 @@ class Gateway:
         try:
             await channel.get_partial_message(int(message_id)).pin()
             return True
-        except FAILED:
+        except (*FAILED, AttributeError):
             return False
 
     async def open_help_thread(self, channel_id: str, name: str, user_id: str, role_id: str | None, notice: Notice, *, guild_id: str | None = None) -> str | None:
         channel = self._channel(channel_id)
         if not isinstance(channel, discord.TextChannel) or (guild_id is not None and str(channel.guild.id) != guild_id):
             return None
+        thread = None
         try:
             thread = await channel.create_thread(name=name[:90] or "Help", type=discord.ChannelType.private_thread, invitable=False,
                                                  auto_archive_duration=10080, reason="Help desk")
@@ -306,35 +357,57 @@ class Gateway:
             return str(thread.id)
         except FAILED as exc:
             log.warning("Couldn't open a help thread: %s", exc)
+            if thread is not None:  # or each press of the button would leave another empty thread behind
+                try:
+                    await thread.delete(reason="Help desk: the first post failed")
+                except FAILED as second:
+                    log.warning("Couldn't delete an empty help thread: %s", second)
             return None
 
     async def _thread(self, thread_id: str):
-        """Archived threads aren't in the cache, so a miss goes to Discord before it counts as gone."""
+        """The thread, or None if it's gone. Archived threads aren't in the cache, so a miss goes to Discord first. Raises DiscordUnavailable if it can't say."""
         thread = self.client.get_channel(int(thread_id))
         if thread is None:
             try:
                 thread = await self.client.fetch_channel(int(thread_id))
-            except FAILED:
+            except (discord.NotFound, discord.Forbidden):
                 return None
+            except FAILED as exc:
+                raise DiscordUnavailable(str(exc)) from exc
         return thread
 
-    async def reopen_thread(self, thread_id: str) -> bool:
-        """Make sure a member's thread can be used. False means it's gone, or locked so the member couldn't post in it."""
+    async def reopen_thread(self, thread_id: str, user_id: str | None = None) -> bool:
+        """Make sure a member's thread can be used, with them in it, since leaving the server may have taken them out.
+
+        False means it's gone, or locked so the member couldn't post in it. A failure that says neither raises
+        DiscordUnavailable, so a blip can't cost the member the thread they have.
+        """
         thread = await self._thread(thread_id)
         if thread is None or thread.locked:
             return False
         try:
             if thread.archived:
                 await thread.edit(archived=False)
+            if user_id:  # after unarchiving, because adding someone needs the thread open
+                await thread.add_user(discord.Object(int(user_id)))
             return True
-        except FAILED:
+        except (discord.NotFound, discord.Forbidden):
             return False
+        except FAILED as exc:
+            raise DiscordUnavailable(str(exc)) from exc
 
     async def close_thread(self, thread_id: str) -> bool:
-        thread = await self._thread(thread_id)
+        try:
+            thread = await self._thread(thread_id)
+        except DiscordUnavailable:
+            return False
         if thread is None:
             return False
         try:
+            if thread.archived:
+                if thread.locked:
+                    return True  # already closed
+                await thread.edit(archived=False)  # Discord refuses an edit to an archived thread unless the edit unarchives it
             await thread.edit(archived=True, locked=True)
             return True
         except FAILED:

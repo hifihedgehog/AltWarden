@@ -1,11 +1,14 @@
 // Messages and per-server profile, with a live preview of what members will see.
-import { draftFor, touched } from "/static/dash/drafts.js";
-import { api, clone, field, fill, h, iconUrl, section, segments, select, state, toast, viewOnly } from "/static/dash/ui.js";
+import { dirtyKeys, draftFor, touched } from "/static/dash/drafts.js";
+import { api, clone, field, fill, h, iconUrl, lookup, pressed, section, segments, select, state, toast, viewOnly } from "/static/dash/ui.js";
 
 const NAMES = { verification: "Verification message", help_desk: "Help desk message", honeypot: "Honeypot warning" };
 const STYLES = ["primary", "secondary", "success", "danger"].map((id) => ({ id, name: { primary: "Blue", secondary: "Gray", success: "Green", danger: "Red" }[id] }));
 const NAME_CHOICES = ["", "Verification"];
 const GUMMY = 8;
+// A picture from anywhere else would tell whoever runs that host who has this page open, so it waits for a press.
+const DISCORD_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
+const SETTLE_MS = 600;
 
 function hex(value) {
   return `#${value.toString(16).padStart(6, "0")}`;
@@ -13,6 +16,15 @@ function hex(value) {
 
 function pick(list) {
   return list[Math.floor(Math.random() * list.length)];
+}
+
+function httpsHost(link) {
+  try {
+    const url = new URL(link);
+    return url.protocol === "https:" ? url.hostname : null;
+  } catch {
+    return null;
+  }
 }
 
 // A name in its font and effect. Gummy moves letter by letter, so each letter gets its own node.
@@ -32,13 +44,13 @@ function styledName(text, look) {
   return node;
 }
 
-function preview(message, name, light, you) {
+function preview(message, name, light, writer, picture) {
   // The verification message falls back to the server's icon, as it does in Discord.
-  const thumbnail = message.thumbnail || (name === "verification" && state.guild.icon ? iconUrl(state.guild.id, state.guild.icon) : "");
-  const embed = h("div", { class: "embed" }, thumbnail ? h("img", { class: "thumb", src: thumbnail, alt: "" }) : null,
+  const icon = name === "verification" && state.guild.icon ? h("img", { class: "thumb", src: iconUrl(state.guild.id, state.guild.icon), alt: "" }) : null;
+  const embed = h("div", { class: "embed" }, message.thumbnail ? picture(message.thumbnail, "thumb") : icon,
     message.title ? h("strong", { text: message.title }) : null, h("p", { text: message.description.replaceAll("{server}", state.guild.name) }),
-    message.image ? h("img", { src: message.image, alt: "" }) : null, message.footer ? h("small", { text: message.footer }) : null,
-    you ? h("span", { class: "subtext", text: `Written by ${you} on this server's staff. Report it` }) : null);
+    message.image ? picture(message.image) : null, message.footer ? h("small", { text: message.footer }) : null,
+    writer ? h("span", { class: "subtext", text: `Written by ${writer} on this server's staff. Report it` }) : null);
   embed.style.borderLeftColor = hex(message.color);
   return h("div", { class: `preview${light ? " light" : ""}` }, message.content ? h("p", { text: message.content }) : null, embed,
     name === "verification" ? h("div", { class: "buttons" },
@@ -60,18 +72,23 @@ function profilePreview(look, light) {
 }
 
 export async function render(view) {
-  const guildPath = `/api/guilds/${state.guild.id}`;
-  const canEdit = state.guild.pages.appearance.edit;
-  const { settings } = await api(`${guildPath}/settings`);
-  const part = draftFor("appearance", { messages: settings.messages, appearance: settings.appearance }, async (entry) => {
-    const result = await api(`${guildPath}/appearance`, { method: "PUT", body: entry.draft });
+  const guildId = state.guild.id;
+  const guildPath = `/api/guilds/${guildId}`;
+  const loaded = await api(`${guildPath}/appearance`);
+  if (!view.isConnected) return;  // the visitor moved on while this was loading, maybe to another server
+  const canEdit = loaded.can_edit;
+  const part = draftFor(guildId, "appearance", { messages: loaded.messages, appearance: loaded.appearance }, async (entry) => {
+    const result = await api(`${guildPath}/appearance`, { method: "PUT", body: { ...entry.draft, base: entry.revision } });
     entry.saved = { messages: result.messages, appearance: result.appearance };
     entry.draft = clone(entry.saved);
+    entry.revision = result.revision;
     if (result.problem) toast(result.problem, true);
-  });
-  let current = NAMES[location.hash.slice(1)] ? location.hash.slice(1) : "verification";
+  }, loaded.revision);
+  let current = lookup(NAMES, location.hash.slice(1)) ? location.hash.slice(1) : "verification";
   let light = false;
   let colorSlot = 0;
+  let postButton = null;
+  let postNote = null;
   const root = h("div");
   view.append(root);
   part.redraw = () => draw();
@@ -81,6 +98,41 @@ export async function render(view) {
     const { author, ...words } = message;
     const { author: none, ...standard } = state.catalog.default_messages[current];
     return JSON.stringify(Object.entries(words).sort()) !== JSON.stringify(Object.entries(standard).sort());
+  };
+
+  // Who the real message will name: whoever last changed it, so the viewer only once they've changed it.
+  const writerOf = (message) => {
+    if (!customized(message)) return null;
+    const saved = part.saved.messages[current];
+    const { author: mine, ...words } = message;
+    const { author, ...savedWords } = saved;
+    const writer = JSON.stringify(words) === JSON.stringify(savedWords) ? author : state.session.user.id;
+    if (!writer) return null;
+    return writer === state.session.user.id ? state.session.user.name : "another staff member";
+  };
+
+  // A link counts once it has stopped changing, so typing one doesn't request every partial address.
+  const settled = new Set(Object.values(part.draft.messages).flatMap((message) => [message.thumbnail, message.image]));
+  const chosen = new Set();
+  let settling = null;
+  const settle = (message) => {
+    clearTimeout(settling);
+    const fresh = [message.thumbnail, message.image].filter((link) => link && !settled.has(link));
+    if (!fresh.length) return;
+    settling = setTimeout(() => {
+      for (const link of fresh) settled.add(link);
+      if (view.isConnected) refresh();
+    }, SETTLE_MS);
+  };
+  const picture = (link, className) => {
+    if (!settled.has(link)) return null;
+    const host = httpsHost(link);
+    if (!host) return h("small", { class: "faint", text: "This link isn't a valid https address, so it can't be shown." });
+    if (DISCORD_HOSTS.has(host) || chosen.has(link)) return h("img", { class: className, src: link, alt: "" });
+    return h("button", { type: "button", class: "button small", "data-key": `load-${className ?? "image"}`, text: `Load picture from ${host}`, onclick: () => {
+      chosen.add(link);
+      refresh();
+    } });
   };
 
   function text(label, key, { area = false, limit = 256, help } = {}) {
@@ -93,8 +145,15 @@ export async function render(view) {
   const profileBox = h("div");
   const refresh = () => {
     const message = part.draft.messages[current];
-    previewBox.replaceChildren(preview(message, current, light, customized(message) ? state.session.user.name : null));
+    settle(message);
+    fill(previewBox, preview(message, current, light, writerOf(message), picture));
     profileBox.replaceChildren(profilePreview(part.draft.appearance, light));
+    // Posting sends the saved message, so with edits waiting it would post the old words and call that done.
+    if (postButton) {
+      const waiting = dirtyKeys().includes("appearance");
+      postButton.disabled = !canEdit || waiting;
+      postNote.hidden = !waiting;
+    }
   };
 
   // The same rules the server applies: a style has a font, an effect, and the colors that effect needs.
@@ -152,6 +211,20 @@ export async function render(view) {
     ];
   }
 
+  function postControl() {
+    // The trap's warning only exists while the trap is on.
+    if (current === "help_desk" || (current === "honeypot" && !loaded.honeypot_enabled)) {
+      postButton = null;
+      return null;
+    }
+    postButton = h("button", { class: "button small", text: "Post it again", disabled: !canEdit, onclick: pressed(async () => {
+      await api(`${guildPath}/post-message`, { method: "POST", body: { message: current } });
+      toast("Posted.");
+    }) });
+    postNote = h("span", { class: "faint", text: "Save your changes first. This posts the saved message.", hidden: true });
+    return h("div", { class: "toolbar" }, postButton, postNote);
+  }
+
   function draw() {
     const draft = part.draft;
     const message = draft.messages[current];
@@ -160,7 +233,6 @@ export async function render(view) {
       touched();
       refresh();
     } });
-    refresh();
     fill(root, viewOnly("appearance"),
       section("Profile in this server", "Discord shows these only here. Custom names and name styles need Change Nickname.", h("div", { class: "editor" },
         h("div", { class: "panel grid" },
@@ -198,14 +270,8 @@ export async function render(view) {
               touched();
               draw();
             } })),
-          h("div", {}, previewBox, current !== "help_desk" ? h("div", { class: "toolbar" }, h("button", { class: "button small", text: "Post it again", disabled: !canEdit, onclick: async () => {
-            try {
-              await api(`${guildPath}/post-message`, { method: "POST", body: { message: current } });
-              toast("Posted.");
-            } catch (error) {
-              toast(error.message, true);
-            }
-          } })) : null))));
+          h("div", {}, previewBox, postControl()))));
+    refresh();
   }
   draw();
 }

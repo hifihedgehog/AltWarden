@@ -14,6 +14,7 @@ module writes an address anywhere.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import csv
 import ipaddress
 import logging
@@ -49,14 +50,20 @@ SOURCES = {
     **{f"vpn-open-{name}.txt": f"{OPEN_VPN}/{name}.txt" for name in OPEN_VPN_FILES},
 }
 REFRESH_SECONDS = 7 * 86400
-MIN_REFRESH_BYTES = 200  # a shorter body is an error page, not a list
+# A download with fewer good rows than this is an error page or a broken export, so it can't replace the list on
+# disk. Each is well under half of what the source published on 2026-11-04, so an ordinary shrink still gets through.
+MIN_ROWS = {
+    "country-ipv4.csv": 50_000, "country-ipv6.csv": 50_000, "asn-ipv4.csv": 50_000, "asn-ipv6.csv": 50_000,
+    "vpn-x4b-ipv4.txt": 1_000, "vpn-x4b-ipv6.txt": 100, "hosting-x4b-ipv4.txt": 5_000, "hosting-x4b-ipv6.txt": 1_000,
+    "tor.txt": 200, "relay.csv": 50_000, "disposable.txt": 2_000,
+    **{f"vpn-open-{name}.txt": 5 for name in OPEN_VPN_FILES},
+}
 
-# A carrier's network name is the only free signal for mobile data, so this reads the ASN's
-# registered name. It misses carriers with plain names, which the page's connection type backs up.
-MOBILE_ORG = re.compile(
-    r"\b(wireless|mobility|mobile|cellular|cellco|lte|gsm|umts|5g|4g|t-mobile|tmobile|vodafone|verizon business wireless"
-    r"|telefonica moviles|movistar|claro|tim celular|orange mobile|ee limited|hutchison|three uk|airtel|jio|globe telecom"
-    r"|smart communications|telstra mobile|optus mobile|rogers wireless|bell mobility|telus mobility)\b", re.IGNORECASE)
+# A carrier's network name is the only free signal for mobile data, so this reads the ASN's registered name
+# for a word that says mobile. A bare brand isn't enough, because Vodafone, Claro, Airtel and Jio also sell home
+# lines, and a home line called mobile loses its IP evidence. It misses carriers with plain names, which the
+# page's connection type backs up for the Mobile data check.
+MOBILE_ORG = re.compile(r"\b(wireless|mobility|mobile|tmobile|cellular|celular|cellco|m[oó]vil|m[oó]viles|lte|gsm|umts|5g|4g|3g)\b", re.IGNORECASE)
 # Carriers whose registered names don't say so.
 KNOWN_MOBILE_ASNS = frozenset({6167, 22394, 20057, 21928})  # Verizon Wireless, AT&T Mobility, T-Mobile US
 NOT_MOBILE_ORG = re.compile(r"\b(county|school|university|college|bank|hosting|cloud|server|datacenter|data center)\b", re.IGNORECASE)
@@ -66,6 +73,8 @@ TRUSTED_MAIL = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail
                           "yahoo.com", "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "pm.me",
                           "aol.com", "gmx.com", "gmx.de", "web.de", "yandex.com", "yandex.ru", "mail.ru", "qq.com",
                           "163.com", "126.com", "naver.com"})
+
+DOMAIN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+")
 
 # Providers known to send many unrelated people through one address. Sharing one of these proves nothing.
 SHARED_ADDRESS_NETS = tuple(ipaddress.ip_network(net) for net in ("100.64.0.0/10",))  # RFC 6598 carrier-grade NAT
@@ -78,6 +87,9 @@ def to_key(address: ipaddress._BaseAddress) -> tuple[int, int]:
     return 6, int(address) >> 64
 
 
+MAX_RANGE_VALUE = 2 ** 64 - 1  # what array("Q") holds
+
+
 class RangeTable:
     """Sorted, non-overlapping ranges searched with bisect, packed so a million rows stay small."""
 
@@ -87,6 +99,9 @@ class RangeTable:
         self.values: list = []
 
     def add(self, start: int, end: int, value) -> None:
+        # Checked before anything goes in, or one bad row would leave the three lists out of step and every later lookup wrong.
+        if not (0 <= start <= MAX_RANGE_VALUE and 0 <= end <= MAX_RANGE_VALUE):
+            raise OverflowError(f"A range value doesn't fit in 64 bits: {start}, {end}")
         self.starts.append(start)
         self.ends.append(end)
         self.values.append(value)
@@ -119,6 +134,9 @@ class RangeSet:
 
     def add(self, start: int, end: int) -> None:
         self._pending.append((start, end))
+
+    def merge(self, other: "RangeSet") -> None:
+        self._pending.extend(other._pending)
 
     def add_text(self, entry: str) -> int:
         """Add one CIDR or address and return its family, or 0 if the text isn't one."""
@@ -193,11 +211,11 @@ class ListSet:
     disposable: set = field(default_factory=set)
     loaded_at: float = 0.0
     entries: int = 0
+    rows: dict = field(default_factory=dict)  # file name to the rows the last load read from it
 
 
-def _load_table(path: Path, table: RangeTable, family: int, parse) -> None:
-    if not path.exists():
-        return
+def _read_table(path: Path, family: int, parse) -> RangeTable:
+    table = RangeTable()
     shift = 0 if family == 4 else 64
     with path.open(encoding="utf-8", errors="replace", newline="") as handle:
         for row in csv.reader(handle):
@@ -205,74 +223,81 @@ def _load_table(path: Path, table: RangeTable, family: int, parse) -> None:
                 continue
             try:
                 start, end = int(row[0]) >> shift, int(row[1]) >> shift
-            except ValueError:
+                value = parse(row)
+                if value is not None:
+                    table.add(start, end, value)
+            except (ValueError, OverflowError):  # a value that isn't a number, or won't fit in 64 bits
                 continue
-            value = parse(row)
-            if value is not None:
-                table.add(start, end, value)
-    table.finish()
+    return table.finish()
 
 
-def _load_lines(path: Path, target: dict) -> None:
-    if not path.exists():
-        return
+def _read_ranges(path: Path, entry_of) -> tuple[dict, int]:
+    """Read addresses and networks into new sets, one entry a line. Returns them and how many lines held one."""
+    ranges = {4: RangeSet(), 6: RangeSet()}
+    rows = 0
     with path.open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
-            entry = line.strip()
-            if not entry or entry.startswith("#"):
-                continue
-            network = ipaddress.ip_network(entry, strict=False) if _is_network(entry) else None
-            if network is None:
-                continue
-            target[network.version].add_text(entry)
+            entry = entry_of(line).strip()
+            family = 6 if ":" in entry else 4
+            if ranges[family].add_text(entry) == family:
+                rows += 1
+    return ranges, rows
 
 
-def _is_network(entry: str) -> bool:
-    try:
-        ipaddress.ip_network(entry, strict=False)
-        return True
-    except ValueError:
-        return False
+def _read_list(name: str, path: Path, data: ListSet) -> int:
+    """Read one file into `data` and return its rows. Nothing reaches `data` until the whole file has parsed,
+    so a file that fails halfway can't leave half a table to search."""
+    if name.startswith(("country-ipv", "asn-ipv")):
+        family = 6 if "ipv6" in name else 4
+        if name.startswith("country-"):
+            data.country[family] = _read_table(path, family, lambda row: row[2][:2].upper())
+            return len(data.country[family])
+        orgs: dict[int, str] = {}
+
+        def parse_asn(row: list[str]) -> int | None:
+            number = int(row[2])
+            if len(row) > 3:
+                orgs.setdefault(number, row[3][:80])
+            return number
+
+        data.asn[family] = _read_table(path, family, parse_asn)
+        for number, org in orgs.items():
+            data.orgs.setdefault(number, org)
+        return len(data.asn[family])
+    if name == "disposable.txt":
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            domains = {line.strip().lower() for line in handle}
+        domains = {domain for domain in domains if DOMAIN.fullmatch(domain)}
+        data.disposable |= domains
+        return len(domains)
+    if name == "relay.csv":
+        target, entry_of = data.relay, lambda line: line.split(",", 1)[0]
+    else:
+        target = data.tor if name == "tor.txt" else data.hosting if name.startswith("hosting-") else data.vpn
+        entry_of = str
+    ranges, rows = _read_ranges(path, entry_of)
+    for family in (4, 6):
+        target[family].merge(ranges[family])
+    return rows
 
 
 def load_lists(folder: Path) -> ListSet:
-    """Read every list from disk. This blocks for a few seconds, so call it in a thread."""
+    """Read every list from disk. This blocks for a few seconds, so call it in a thread. A file that
+    can't be read is logged and skipped, because one bad file mustn't stop the bot from starting."""
     started = time.monotonic()
     data = ListSet()
-    for family in (4, 6):
-        _load_table(folder / f"country-ipv{family}.csv", data.country[family], family, lambda row: row[2][:2].upper())
-
-        def parse_asn(row: list[str]) -> int | None:
-            try:
-                number = int(row[2])
-            except ValueError:
-                return None
-            if len(row) > 3 and number not in data.orgs:
-                data.orgs[number] = row[3][:80]
-            return number
-
-        _load_table(folder / f"asn-ipv{family}.csv", data.asn[family], family, parse_asn)
-        _load_lines(folder / f"vpn-x4b-ipv{family}.txt", data.vpn)
-        _load_lines(folder / f"hosting-x4b-ipv{family}.txt", data.hosting)
-    for name in OPEN_VPN_FILES:
-        _load_lines(folder / f"vpn-open-{name}.txt", data.vpn)
-    _load_lines(folder / "tor.txt", data.tor)
-    relay = folder / "relay.csv"
-    if relay.exists():
-        with relay.open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                entry = line.split(",", 1)[0].strip()
-                if entry:
-                    data.relay[4 if ":" not in entry else 6].add_text(entry)
+    for name in SOURCES:
+        path = folder / name
+        try:
+            if path.exists():
+                data.rows[name] = _read_list(name, path, data)
+        except Exception as exc:
+            log.warning("Could not read %s: %s: %s", name, type(exc).__name__, str(exc)[:200])
     for group in (data.vpn, data.hosting, data.relay, data.tor):
         group[4].finish()
         group[6].finish()
     data.mobile_asns = KNOWN_MOBILE_ASNS | {number for number, org in data.orgs.items()
                                             if MOBILE_ORG.search(org) and not NOT_MOBILE_ORG.search(org)}
-    path = folder / "disposable.txt"
-    if path.exists():
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            data.disposable.update(line.strip().lower() for line in handle if line.strip() and not line.startswith("#"))
     data.disposable -= TRUSTED_MAIL
     data.entries = sum(len(table) for group in (data.country, data.asn, data.vpn, data.hosting, data.relay, data.tor)
                        for table in group.values())
@@ -320,13 +345,18 @@ class NetIntel:
             hosting=key in data.hosting[family],
             mobile=asn in data.mobile_asns,
             shared=asn in data.mobile_asns,
-            known=self.ready,
+            # Other lists tell nothing about where an address is, so an allow list can't hold an unplaced address against anyone without this table.
+            known=len(data.country[family]) > 0,
         )
 
     def is_disposable(self, domain: str) -> bool:
         domain = domain.strip().lower().rstrip(".")
         if not domain or domain in TRUSTED_MAIL:
             return False
+        try:  # the list holds internationalized domains in their xn-- form
+            domain = domain.encode("idna").decode("ascii")
+        except UnicodeError:
+            pass
         parts = domain.split(".")
         return any(".".join(parts[index:]) in self.lists.disposable for index in range(len(parts) - 1))
 
@@ -358,17 +388,19 @@ class NetIntel:
     async def _fetch(self, session: aiohttp.ClientSession, name: str, url: str) -> int:
         target = self.folder / name
         partial = target.with_suffix(target.suffix + ".part")
-        async with session.get(url, headers={"User-Agent": "AltWarden list refresh"}) as response:
-            response.raise_for_status()
-            size = 0
-            with partial.open("wb") as handle:
-                async for chunk in response.content.iter_chunked(1 << 16):
-                    handle.write(chunk)
-                    size += len(chunk)
-        if size < MIN_REFRESH_BYTES:
+        try:
+            async with session.get(url, headers={"User-Agent": "AltWarden list refresh"}) as response:
+                response.raise_for_status()
+                with partial.open("wb") as handle:
+                    async for chunk in response.content.iter_chunked(1 << 16):
+                        handle.write(chunk)
+            # A 200 can still be an error page, so it's parsed the way the next load will parse it before it counts.
+            rows = await asyncio.to_thread(_read_list, name, partial, ListSet())
+            if rows < MIN_ROWS[name]:
+                raise ValueError(f"only {rows} rows")
+            os.replace(partial, target)
+        finally:
             partial.unlink(missing_ok=True)
-            raise ValueError(f"only {size} bytes")
-        os.replace(partial, target)
         return 1
 
     def missing(self) -> list[str]:
@@ -378,13 +410,29 @@ class NetIntel:
     def stale(self) -> bool:
         return not all(self._fresh(name) for name in SOURCES)
 
+    def list_status(self) -> list[dict]:
+        """Each list's name, its age in days (None if it never downloaded) and the rows the last load read, for the Health page."""
+        rows = []
+        for name in SOURCES:
+            try:
+                age = round((time.time() - (self.folder / name).stat().st_mtime) / 86400, 1)
+            except OSError:
+                age = None
+            rows.append({"name": name, "age_days": age, "rows": self.lists.rows.get(name, 0)})
+        return rows
 
-async def external_lookup(session: aiohttp.ClientSession, ip: str, key: str | None = None) -> bool | None:
-    """Ask proxycheck.io if an address is a proxy, VPN or Tor exit. Runs only for servers that chose this, and fails quietly.
 
-    "anonymous" doesn't count, because it's true for public addresses such as Google's DNS. The key
-    is optional: proxycheck.io allows 100 lookups a day without one and 1,000 with a free one.
+# What proxycheck.io said on its last refusal, for the caller in the same task. Empty when it just couldn't be reached.
+last_refusal: contextvars.ContextVar[str | None] = contextvars.ContextVar("last_refusal", default=None)
+
+
+async def external_lookup(session: aiohttp.ClientSession, ip: str, key: str | None = None) -> dict | None:
+    """Ask proxycheck.io about an address. Returns what it detected, `proxy`, `vpn`, `tor` and `hosting`, or None on any failure.
+
+    Runs only for servers that chose this. "anonymous" doesn't count, because it's true for public addresses such as
+    Google's DNS. The key is optional: proxycheck.io allows 100 lookups a day without one and 1,000 with a free one.
     """
+    last_refusal.set(None)
     try:
         async with session.get(f"https://proxycheck.io/v3/{ip}", params={"key": key} if key else None,
                                timeout=aiohttp.ClientTimeout(total=3)) as response:
@@ -395,7 +443,25 @@ async def external_lookup(session: aiohttp.ClientSession, ip: str, key: str | No
     if not isinstance(body, dict):
         return None
     if body.get("status") not in ("ok", "warning"):
-        log.warning("Outside VPN lookup was refused: %s", body.get("status"))
+        message = body.get("message") if isinstance(body.get("message"), str) else str(body.get("status"))
+        if key:
+            message = message.replace(key, "[key]")
+        last_refusal.set(message[:200])
+        log.warning("Outside VPN lookup was refused: %s", last_refusal.get())
         return None
     entry = next((value for value in body.values() if isinstance(value, dict) and isinstance(value.get("detections"), dict)), None)
-    return None if entry is None else any(entry["detections"].get(name) is True for name in ("proxy", "vpn", "tor"))
+    return None if entry is None else {name: entry["detections"].get(name) is True for name in ("proxy", "vpn", "tor", "hosting")}
+
+
+async def check_lookup_key(session: aiohttp.ClientSession, key: str) -> bool | None:
+    """Whether proxycheck.io recognizes a key: True, False, or None if it couldn't be asked."""
+    try:
+        async with session.get("https://proxycheck.io/dashboard/export/usage/", params={"key": key},
+                               timeout=aiohttp.ClientTimeout(total=5)) as response:
+            body = await response.json(content_type=None)
+    except Exception as exc:
+        log.warning("Couldn't check a lookup key: %s", type(exc).__name__)
+        return None
+    if not isinstance(body, dict):
+        return None
+    return "error" not in body

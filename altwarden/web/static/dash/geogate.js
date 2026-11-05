@@ -1,5 +1,5 @@
 // Country rules: pick on a flat map, a globe, or a list, with an action per continent, region or country.
-import { clone, dialog, h, segments, state, svg } from "/static/dash/ui.js";
+import { clone, dialog, fill, h, plural, segments, state, svg } from "/static/dash/ui.js";
 
 const ACTIONS = ["", "watch", "deny", "kick", "ban"];
 const LABELS = { "": "Default", watch: "Watch", deny: "Deny", kick: "Kick", ban: "Ban" };
@@ -89,15 +89,19 @@ export async function openCountryPicker(check, onDone) {
     drawTree();
   }
 
+  // What the rule does to a country: a block list acts on the ones listed, an allow list on all the others.
+  const actedOn = (country) => (draft.list === "allow") !== picked.has(country.code);
+
   function landClass(country) {
-    if (!country || !picked.has(country.code)) return "land";
+    if (!country) return "land";
+    if (!actedOn(country)) return draft.list === "allow" ? "land allowed" : "land";
     const action = actionOf(country);
     return `land picked ${action === "deny" ? "" : action}`;
   }
 
   let shapes = [];
   function drawMap() {
-    count.textContent = `${picked.size} countries picked.`;
+    count.textContent = `${plural(picked.size, "country", "countries")} picked.${draft.list === "allow" ? " Every other country gets the action." : ""}`;
     const flat = shape === "flat";
     shapes = [];
     const canvas = flat
@@ -139,18 +143,19 @@ export async function openCountryPicker(check, onDone) {
     for (const name of ["pointerup", "pointercancel"]) canvas.addEventListener(name, () => { start = null; });
   }
 
-  function overridePicker(key) {
-    return h("select", { "aria-label": "Action", onclick: (event) => event.stopPropagation(), onchange: (event) => {
+  // A country's own action does nothing unless the rule acts on that country, so its picker says so by being off.
+  function overridePicker(key, name, disabled = false) {
+    return h("select", { "aria-label": `Action for ${name}`, disabled, title: disabled ? "The rule doesn't act on this country." : null, onclick: (event) => event.stopPropagation(), onchange: (event) => {
       if (event.target.value) draft.overrides[key] = event.target.value;
       else delete draft.overrides[key];
       drawMap();
     } }, ACTIONS.map((action) => h("option", { value: action, text: LABELS[action], selected: (draft.overrides[key] ?? "") === action })));
   }
 
-  function groupCheckbox(items) {
+  function groupCheckbox(items, name) {
     const all = items.every((country) => picked.has(country.code));
     const some = items.some((country) => picked.has(country.code));
-    const box = h("input", { type: "checkbox", checked: all, onclick: (event) => {
+    const box = h("input", { type: "checkbox", checked: all, "aria-label": `Pick all of ${name}`, onclick: (event) => {
       event.stopPropagation();
       for (const country of items) {
         if (event.target.checked) picked.add(country.code);
@@ -167,25 +172,25 @@ export async function openCountryPicker(check, onDone) {
   function drawTree() {
     const wanted = countries.filter((country) => country.name.toLowerCase().includes(filter));
     const continents = [...new Set(wanted.map((country) => country.continent))].sort();
-    treeBox.replaceChildren(...continents.map((continent) => {
+    fill(treeBox, continents.map((continent) => {
       const inContinent = wanted.filter((country) => country.continent === continent);
       const regions = [...new Set(inContinent.map((country) => country.region))].sort();
       return h("details", { open: Boolean(filter) },
-        h("summary", {}, groupCheckbox(inContinent), h("span", { text: continent }), overridePicker(`continent:${continent}`)),
+        h("summary", {}, groupCheckbox(inContinent, continent), h("span", { text: continent }), overridePicker(`continent:${continent}`, continent)),
         h("div", { class: "inner" }, regions.map((region) => {
           const inRegion = inContinent.filter((country) => country.region === region);
           return h("details", { open: Boolean(filter) },
-            h("summary", {}, groupCheckbox(inRegion), h("span", { text: region }), overridePicker(`region:${region}`)),
+            h("summary", {}, groupCheckbox(inRegion, region), h("span", { text: region }), overridePicker(`region:${region}`, region)),
             h("div", { class: "inner" }, inRegion.map((country) => h("label", { class: "country" },
               h("input", { type: "checkbox", checked: picked.has(country.code), onchange: () => toggleCountry(country.code) }),
-              h("span", { text: country.name }), overridePicker(country.code)))));
+              h("span", { text: country.name }), overridePicker(country.code, country.name, !actedOn(country))))));
         })));
     }));
   }
 
   const body = h("div", {},
     h("div", { class: "toolbar" },
-      segments([{ id: "block", label: "Block these" }, { id: "allow", label: "Allow only these" }], draft.list, (value) => { draft.list = value; }, { label: "List type" }),
+      segments([{ id: "block", label: "Block these" }, { id: "allow", label: "Allow only these" }], draft.list, (value) => { draft.list = value; drawMap(); drawTree(); }, { label: "List type" }),
       segments([{ id: "flat", label: "Map" }, { id: "globe", label: "Globe" }], shape, (value) => { shape = value; drawMap(); }, { label: "View" })),
     h("div", { class: "toolbar" }, h("span", { class: "muted", text: "Default action" }),
       segments(state.catalog.actions, draft.action, (value) => { draft.action = value; drawMap(); }, { label: "Default action" })),

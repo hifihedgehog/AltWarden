@@ -144,13 +144,14 @@ class WhenDiscordFails(Base):
         self.assertFalse(await self.gateway.unban(guild, str(MEMBER), "x"))
         with self.assertRaises(DiscordUnavailable):
             await self.gateway.is_banned(guild, str(MEMBER))
-        self.assertFalse(await self.gateway.dm(str(MEMBER), Notice(content="hi")))
+        self.assertIsNone(await self.gateway.dm(str(MEMBER), Notice(content="hi")))
         self.assertIsNone(await self.gateway.send(str(CHANNEL), Notice(content="hi")))
         self.assertFalse(await self.gateway.delete_message(str(CHANNEL), "1"))
         self.assertFalse(await self.gateway.edit_message(str(CHANNEL), "1", Notice(content="hi")))
         self.assertFalse(await self.gateway.pin(str(CHANNEL), "1"))
         self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")))
-        self.assertFalse(await self.gateway.reopen_thread("970000000000000077"))
+        with self.assertRaises(DiscordUnavailable):
+            await self.gateway.reopen_thread("970000000000000077")
         self.assertFalse(await self.gateway.close_thread("970000000000000077"))
         self.assertIsNotNone(await self.gateway.add_role(guild, str(MEMBER), str(ROLE_LOW), "x"))
         self.assertIsNotNone(await self.gateway.apply_profile(guild, {"nick": "x"}))
@@ -438,9 +439,10 @@ class ConnectionEvents(Base):
 
 
 class Unbans(Base):
-    async def test_seeing_a_ban_without_ban_members_counts_as_none(self):
+    async def test_no_ban_members_means_it_cant_say(self):
         self.answers[("GET", f"/guilds/{GUILD}/bans/{MEMBER}")] = self.forbidden()
-        self.assertFalse(await self.gateway.is_banned(str(GUILD), str(MEMBER)))
+        with self.assertRaises(DiscordUnavailable):
+            await self.gateway.is_banned(str(GUILD), str(MEMBER))
 
     async def test_no_ban_to_lift_counts_as_lifted(self):
         self.answers[("DELETE", f"/guilds/{GUILD}/bans/{MEMBER}")] = self.not_found()
@@ -752,6 +754,7 @@ class Buttons(Base):
         await super().asyncSetUp()
         self.service = SimpleNamespace()
         self.bot.service = self.service
+        self.bot._ready.set()
         self.said = []
 
     def press(self, custom_id, user_id=MEMBER):

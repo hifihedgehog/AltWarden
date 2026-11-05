@@ -7,7 +7,9 @@ The rules follow proven open implementations rather than guesses:
   tampering      CreepJS's lie detection: native functions must look native, in every way.
   worker scope   CreepJS compares a Web Worker's view of the device with the page's. A spoofing
                  tool that patches the page usually forgets the worker.
-  software GPUs  the renderer names CreepJS and BotD list for virtual machines and headless Chrome.
+  virtual machines  a hypervisor's graphics name, or a software rasterizer. BotD names only Mesa OffScreen and
+                 CreepJS only SwiftShader, so this list is this project's own. A VirtualBox guest with 3D off looks
+                 exactly like a PC with hardware acceleration off, so both count, and the member's text gives the remedy.
   modified phones no web API reports root, and the services that do report it read it from a native
                  app. Chromium's model hint is the phone's ro.product.model property, which root
                  tools can rewrite, so a Pixel's model is compared with its graphics chip and its
@@ -23,14 +25,15 @@ Discord account and the network, can't be forged this way, and the docs say so p
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass, field
 
 MAX_REPORT_BYTES = 64 * 1024
 
-VM_RENDERER = re.compile(r"vmware|virtualbox|parallels|qemu|virtio|virgl|hyper-v|microsoft basic render|citrix|"
-                         r"xen |svga3d|llvmpipe|softpipe|swiftshader|mesa offscreen|microsoft remote display", re.IGNORECASE)
-EMULATOR_MODEL = re.compile(r"sdk_gphone|android sdk built|emulator|genymotion|vbox86|bluestacks|nox|ldplayer|memu", re.IGNORECASE)
+VM_RENDERER = re.compile(r"vmware|virtualbox|parallels|qemu|virtio|virgl|hyper-v|xen |svga3d", re.IGNORECASE)
+SOFTWARE_RENDERER = re.compile(r"llvmpipe|softpipe|swiftshader|mesa offscreen|microsoft basic render|microsoft remote display|citrix", re.IGNORECASE)
+EMULATOR_MODEL = re.compile(r"sdk_gphone|android sdk built|emulator|genymotion|vbox86|bluestacks|\bnox(?:player)?\b|ldplayer|\bmemu", re.IGNORECASE)
 # NVIDIA's Tegra is a real Android chip, in the Shield TV. Its desktop cards aren't.
 EMULATOR_RENDERER = re.compile(r"android emulator|swiftshader|llvmpipe|virgl|geforce|radeon|intel\(r\)|nvidia(?! tegra)", re.IGNORECASE)
 HEADLESS = re.compile(r"HeadlessChrome|PhantomJS|Electron|SlimerJS", re.IGNORECASE)
@@ -41,12 +44,26 @@ HEADLESS = re.compile(r"HeadlessChrome|PhantomJS|Electron|SlimerJS", re.IGNORECA
 FINAL_ANDROID = {"Pixel": 10, "Pixel XL": 10, "Pixel 2": 11, "Pixel 2 XL": 11, "Pixel 3": 12, "Pixel 3 XL": 12, "Pixel 3a": 12,
                  "Pixel 3a XL": 12, "Pixel 4": 13, "Pixel 4 XL": 13, "Pixel 4a": 13, "Pixel 4a (5G)": 14, "Pixel 5": 14, "Pixel 5a": 14}
 
-# Functions whose lies matter most, because anti-detect tools patch exactly these.
-HARDWARE_APIS = ("Navigator.hardwareConcurrency", "Navigator.deviceMemory", "Navigator.platform",
-                 "Navigator.userAgent", "Navigator.languages", "Screen.width", "Screen.height",
-                 "WebGLRenderingContext.getParameter", "WebGL2RenderingContext.getParameter",
-                 "HTMLCanvasElement.toDataURL", "CanvasRenderingContext2D.getImageData",
-                 "Intl.DateTimeFormat.resolvedOptions", "Date.getTimezoneOffset")
+# What the page always sends, and a field each section always holds. A section the browser couldn't build still
+# arrives, as {"failed": true}, so one that's absent or the wrong shape never came from the page.
+ALWAYS_SENT = {"nav": ("ua", str), "scr": ("w", float), "tz": ("offset", float), "gpu": ("renderer", str), "eng": ("evalLen", float),
+               "lies": ("total", float), "canvas": ("noisy", bool), "privacy": (None, None), "devtools": ("timing", bool), "act": ("ms", float)}
+# One broken API can take out a section or two, and a third is possible. A browser where most of them fail isn't running this page.
+MAX_FAILED_SECTIONS = 3
+
+# Functions anti-detect tools patch, by what they describe. A privacy extension usually rewrites one
+# family, and an anti-detect tool rewrites several, so a rewrite only counts as one from two families up.
+HARDWARE_APIS = {"Navigator.hardwareConcurrency": "navigator", "Navigator.deviceMemory": "navigator", "Navigator.platform": "navigator",
+                 "Navigator.userAgent": "navigator", "Navigator.languages": "navigator", "Screen.width": "screen", "Screen.height": "screen",
+                 "WebGLRenderingContext.getParameter": "webgl", "WebGL2RenderingContext.getParameter": "webgl",
+                 "Intl.DateTimeFormat.resolvedOptions": "time", "Date.getTimezoneOffset": "time"}
+# Canvas protection extensions rewrite these. That hides a fingerprint, and says nothing about the device.
+CANVAS_APIS = ("HTMLCanvasElement.toDataURL", "CanvasRenderingContext2D.getImageData")
+# BotD detectors that read the environment and not a tool's name. BotD's own comments give real cases for some
+# (rtt.ts, window_size.ts), so one alone adds to the bot score and only two together are automation. The plugin
+# count isn't here: it has a narrower excuse of its own, for a browser set to download PDFs.
+WEAK_DETECTORS = frozenset({"detectRTT", "detectWindowSize", "detectNotificationPermissions", "detectPluginsArray",
+                            "detectMimeTypesConsistent", "detectLanguagesLengthInconsistency", "detectProductSub"})
 
 
 def os_family(text: str) -> str | None:
@@ -56,7 +73,7 @@ def os_family(text: str) -> str | None:
         return "android"
     if "iphone" in value or "ipad" in value or "ipod" in value:
         return "ios"
-    if "win" in value:
+    if re.search(r"\bwin(?:dows|ce|\d\d)?\b", value):  # a plain "win" would match Darwin
         return "windows"
     if "mac" in value:
         return "mac"
@@ -102,7 +119,8 @@ def gpu_os(renderer: str) -> str | None:
 
 def gpu_model(renderer: str) -> str:
     """Strip the wrapper each browser puts around the same graphics card."""
-    value = (renderer or "").upper()
+    # Whitespace is squeezed first, because the pattern below backtracks quadratically over a long run of it.
+    value = " ".join((renderer or "").upper().split())
     match = re.search(r"ANGLE \([^,]*,\s*([^,]+?)(?:\s+DIRECT3D|\s+OPENGL|\s+\(0X|,|\))", value)
     if match:
         value = match.group(1)
@@ -110,12 +128,22 @@ def gpu_model(renderer: str) -> str:
     return " ".join(value.split())
 
 
+def _apple_agent(value: str) -> str:
+    """An iPad in desktop mode can call itself a Mac on the page and an iPad in a worker, so what that changes is dropped from a Safari agent."""
+    if engine_of(value) != "webkit":
+        return value
+    return " ".join(re.sub(r"\((?:Macintosh|iPad|iPhone|iPod)[^)]*\)|\bMobile/\S+|\bSafari/\S+", " ", value).split())
+
+
 def _text(value, limit: int = 300) -> str:
     return value[:limit] if isinstance(value, str) else ""
 
 
 def _number(value, fallback=None):
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else fallback
+    """A real number, or the fallback. Python's JSON parser accepts NaN and Infinity, and a whole number can be too long for a float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return fallback
+    return fallback if isinstance(value, float) and not math.isfinite(value) else value
 
 
 def _dict(value) -> dict:
@@ -136,6 +164,7 @@ class BrowserVerdict:
     emulated: bool = False
     tamper_score: int = 0
     bot_score: int = 0
+    weak_detector: bool = False
     reasons: dict = field(default_factory=dict)
     os: str | None = None
     browser: str | None = None
@@ -147,8 +176,12 @@ class BrowserVerdict:
         self.reasons.setdefault(key, []).append(reason)
 
 
-def evaluate(report: dict, headers: dict) -> BrowserVerdict:
-    """Turn one untrusted report into a verdict. Every field is optional and type-checked."""
+def evaluate(report: dict, headers: dict, *, device_cookie: bool = True) -> BrowserVerdict:
+    """Turn one untrusted report into a verdict. Every field is type-checked, and a required one that's missing is a finding.
+
+    `device_cookie` is False when a browser that holds the sign-in cookie sent no valid device cookie, which the page
+    sets before every submit. Only a client that isn't a browser, or one that stripped it to look new, arrives that way.
+    """
     report = _dict(report)
     # Header names keep whatever case the browser and proxy sent. Over HTTP/2 that's lower case.
     headers = {str(name).lower(): value for name, value in headers.items()}
@@ -172,37 +205,63 @@ def evaluate(report: dict, headers: dict) -> BrowserVerdict:
     claimed_os = os_family(ua) or os_family(header_ua)
     verdict.os = claimed_os
     verdict.browser = browser_family(ua or header_ua)
-    mobile = bool(uad.get("mobile")) or claimed_os in ("android", "ios") or "Mobi" in ua
+    # The report's own uad.mobile isn't read, because it would let a desktop agent claim the weaker evidence of a phone.
+    mobile = claimed_os in ("android", "ios") or "Mobi" in ua or _android_in_desktop_mode(claimed_os, uad, nav)
     lied_apis = [name for name in lies.get("apis", []) if isinstance(name, str)][:64] if isinstance(lies.get("apis"), list) else []
-    lie_total = int(_number(lies.get("total"), 0) or 0)
+    lie_total = max(0, min(64, int(_number(lies.get("total"), 0))))  # the collector checks fewer functions than this
 
-    _check_report_exists(verdict, ua, header_ua, eng)
+    _check_report_exists(verdict, report, header_ua, device_cookie)
     _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis)
     _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, worker, claimed_os)
     _check_antidetect(verdict, canvas, worker, nav, gpu, lied_apis, tz, privacy, engine_of(ua))
     _check_tampering(verdict, lies, lied_apis, lie_total)
-    _check_privacy(verdict, privacy, canvas, gpu, ua)
+    _check_privacy(verdict, privacy, canvas, lied_apis, ua, (_dict(report.get("fp")), bot, _dict(report.get("private"))))
     _check_devtools(verdict, tools, mobile, engine_of(ua))
-    _check_device(verdict, renderer, uad, nav, mobile, claimed_os)
+    _check_device(verdict, renderer, uad, nav, claimed_os)
 
     private = _dict(report.get("private"))
     if private.get("isPrivate") is True:
         verdict.private = True
         verdict.note("private", "private window")
 
-    _fingerprints(verdict, report, nav, scr, gpu, tz, claimed_os, renderer, mobile)
+    _fingerprints(verdict, report, nav, scr, tz, claimed_os, renderer, mobile)
     verdict.bot_score = _bot_score(verdict, report)
     return verdict
 
 
-def _check_report_exists(verdict, ua, header_ua, eng) -> None:
-    """The collector always sends these two, so a request without them never came from the page."""
-    if not ua or _number(eng.get("evalLen")) is None:
+def _android_in_desktop_mode(claimed_os, uad, nav) -> bool:
+    """Request desktop site makes an Android phone or tablet send a Linux desktop agent, and these still give it away."""
+    if claimed_os != "linux":
+        return False
+    touch_arm = re.match(r"Linux (?:arm|aarch64)", _text(nav.get("platform"), 60)) and (_number(nav.get("touch"), 0) or 0) > 1
+    return bool(touch_arm) or os_family(_text(uad.get("platform"), 40)) == "android"
+
+
+def _check_report_exists(verdict, report, header_ua, device_cookie) -> None:
+    """The collector always sends these, so a report without them never came from the page."""
+    failed = 0
+    complete = True
+    for name, (key, kind) in ALWAYS_SENT.items():
+        section = report.get(name)
+        if isinstance(section, dict) and section.get("failed") is True:
+            failed += 1
+        elif not isinstance(section, dict) or (key and not _has_field(section.get(key), kind)) or (name == "nav" and not section["ua"]):
+            complete = False
+    if failed:
+        verdict.note("tamper", f"{failed} report sections failed in the browser")
+    if not complete or failed > MAX_FAILED_SECTIONS:
         verdict.automated = True
-        verdict.note("automated", "no browser report")
+        verdict.note("automated", "incomplete browser report")
+    if not device_cookie:
+        verdict.automated = True
+        verdict.note("automated", "no device cookie")
     if header_ua and not header_ua.startswith("Mozilla/"):
         verdict.automated = True
         verdict.note("automated", "not a browser")
+
+
+def _has_field(value, kind) -> bool:
+    return isinstance(value, kind) if kind in (str, bool) else _number(value) is not None
 
 
 def _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis) -> None:
@@ -210,7 +269,10 @@ def _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis) -> No
     # A desktop Chrome set to download PDFs has no plugins, which BotD reads as headless. If nothing
     # else fired and the browser says its PDF viewer is off, that's all this is.
     download_pdfs = fired == ["detectPluginsLengthInconsistency"] and nav.get("pdf") is False
-    if bot.get("bot") is True and not download_pdfs:
+    lone_weak = len(fired) == 1 and fired[0] in WEAK_DETECTORS
+    if bot.get("bot") is True and lone_weak and not download_pdfs:
+        verdict.weak_detector = True
+    elif bot.get("bot") is True and not download_pdfs:
         verdict.automated = True
         kind = _text(bot.get("botKind"), 30)
         verdict.note("automated", f"BotD: {kind if re.fullmatch(r'[A-Za-z_]+', kind) else 'unknown'}")
@@ -232,12 +294,14 @@ def _check_automation(verdict, bot, nav, ua, header_ua, worker, lied_apis) -> No
 
 
 def _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, worker, claimed_os) -> None:
-    # Brave pads its user agent with spaces, and only in some of these places.
-    if ua and header_ua and ua.strip() != header_ua.strip():
+    # Brave pads its user agent with spaces, and only in some of these places. A proxy can add a token to
+    # the request's agent, so one being the start of the other isn't a different browser.
+    page_ua, sent_ua = ua.strip(), header_ua.strip()
+    if page_ua and sent_ua and not (sent_ua.startswith(page_ua) or page_ua.startswith(sent_ua)):
         verdict.fake_ua = True
         verdict.note("fake_ua", "page and request disagree")
     worker_ua = _text(worker.get("ua"), 500)
-    if ua and worker_ua and ua.strip() != worker_ua.strip():
+    if ua and worker_ua and _apple_agent(ua.strip()) != _apple_agent(worker_ua.strip()):
         verdict.fake_ua = True
         verdict.note("fake_ua", "page and worker disagree")
 
@@ -282,7 +346,7 @@ def _check_identity(verdict, nav, uad, ua, header_ua, headers, eng, renderer, wo
 
 def _check_antidetect(verdict, canvas, worker, nav, gpu, lied_apis, tz, privacy, engine) -> None:
     spoofed = [name for name in lied_apis if name in HARDWARE_APIS]
-    if spoofed:
+    if len({HARDWARE_APIS[name] for name in spoofed}) >= 2:
         verdict.antidetect = True
         verdict.note("antidetect", f"{len(spoofed)} device functions rewritten")
     if worker:
@@ -297,10 +361,12 @@ def _check_antidetect(verdict, canvas, worker, nav, gpu, lied_apis, tz, privacy,
         if tz.get("name") and worker.get("tz") and tz.get("name") != worker.get("tz"):
             verdict.antidetect = True
             verdict.note("antidetect", "worker sees a different time zone")
-    # A canvas that changes between two identical draws is being randomized. Safari's private
-    # windows and Firefox add noise on their own (FingerprintJS skips the canvas there for that
-    # reason), and so does Brave, so this only means something on other Chrome-family browsers.
-    if canvas.get("noisy") is True and engine == "blink" and not privacy.get("brave"):
+    # A canvas that changes between two identical draws is being randomized. Safari and Firefox add
+    # noise on their own (FingerprintJS skips the canvas there for that reason), and so does Brave, so
+    # this only means something on other Chrome-family browsers. Noise from a canvas function a privacy
+    # extension rewrote is the privacy check's to report. Noise with nothing rewritten is built into the browser.
+    wrapped_canvas = any(name in CANVAS_APIS for name in lied_apis)
+    if canvas.get("noisy") is True and engine == "blink" and privacy.get("brave") is not True and not wrapped_canvas:
         verdict.antidetect = True
         verdict.note("antidetect", "canvas output changes between draws")
     offset = _number(tz.get("offset"))
@@ -328,10 +394,16 @@ def _check_tampering(verdict, lies, lied_apis, lie_total) -> None:
     verdict.tamper_score = min(100, score)
 
 
-def _check_privacy(verdict, privacy, canvas, gpu, ua) -> None:
-    if privacy.get("brave") is True:
+def _check_privacy(verdict, privacy, canvas, lied_apis, ua, libraries) -> None:
+    # Brave with Shields down hides nothing. A noisy canvas shows they're up, whatever the mode test read.
+    if privacy.get("brave") is True and (privacy.get("braveMode") in ("standard", "strict") or canvas.get("noisy") is True):
         verdict.privacy = True
-        verdict.note("privacy", "Brave")
+        verdict.note("privacy", "Brave Shields")
+    # The file never arrived, which is what a request blocker does. A slow phone reports a timeout and isn't touched.
+    for name, section in zip(("fingerprint", "automation", "private window"), libraries):
+        if section.get("blocked") is True:
+            verdict.privacy = True
+            verdict.note("privacy", f"{name} library blocked")
     if privacy.get("resist") is True:
         verdict.privacy = True
         verdict.note("privacy", "fingerprint resistance on")
@@ -341,9 +413,15 @@ def _check_privacy(verdict, privacy, canvas, gpu, ua) -> None:
     if canvas.get("blocked") is True:
         verdict.privacy = True
         verdict.note("privacy", "canvas blocked")
-    # Firefox randomizes canvas under fingerprinting protection and Safari in private windows. Their
-    # users chose that for privacy. On Chromium, where nothing built in does it, it means a spoofer.
-    if engine_of(ua) in ("gecko", "webkit") and canvas.get("noisy") is True:
+    if any(name in CANVAS_APIS for name in lied_apis):
+        verdict.privacy = True
+        verdict.note("privacy", "canvas functions rewritten")
+    # As of Firefox 145, Firefox randomizes canvas only in private windows and under strict protection
+    # (wiki.mozilla.org/Fingerprinting), so its users chose this. If a later Firefox does it by default, drop this
+    # rule, as was done for Safari: secondary sources say Safari 26 adds noise in ordinary browsing, unverified on a
+    # real device, and a rule that may stop every iPhone isn't worth keeping. On Chromium, see _check_antidetect.
+    # Measured on Firefox 157: two draws matched under strict protection and differed only under resistFingerprinting.
+    if engine_of(ua) == "gecko" and canvas.get("noisy") is True:
         verdict.privacy = True
         verdict.note("privacy", "canvas randomized")
     if engine_of(ua) == "blink" and privacy.get("gpuHidden") is True:
@@ -355,8 +433,9 @@ def _check_devtools(verdict, tools, mobile, engine) -> None:
     if mobile:
         return  # phones have no docked panel, and their window gaps are browser toolbars
     # In real Edge the console test fired on none of 20 rounds with no debugger, and on 17 to 20 with one
-    # attached, docked or not. Firefox stayed quiet on all 20 rounds. Safari's inspector can't be detached
-    # in a test, so a quiet run can't be shown there, and a false alarm would turn away real members.
+    # attached, docked or not. Firefox 157 fired on 5 of 6 calls with its console panel open and none of 6
+    # with it closed. Safari's inspector can't be detached in a test, so a quiet run can't be shown there,
+    # and a false alarm would turn away real members.
     # Side panels and vertical tabs leave the same window gap as a docked panel, so the gap isn't used.
     if engine in ("blink", "gecko") and tools.get("timing") is True:
         verdict.devtools = True
@@ -388,11 +467,14 @@ def newer_than_shipped(model: str, platform_version: str) -> bool:
     return bool(found and model in FINAL_ANDROID and int(found.group(1)) > FINAL_ANDROID[model])
 
 
-def _check_device(verdict, renderer, uad, nav, mobile, claimed_os) -> None:
+def _check_device(verdict, renderer, uad, nav, claimed_os) -> None:
     if VM_RENDERER.search(renderer):
         verdict.vm = True
-        verdict.note("vm", "virtual or software graphics")
-    if claimed_os != "android" and not (mobile and claimed_os == "android"):
+        verdict.note("vm", "virtual machine graphics")
+    elif SOFTWARE_RENDERER.search(renderer):
+        verdict.vm = True
+        verdict.note("vm", "software graphics")
+    if claimed_os != "android":
         return
     model = _text(uad.get("model"), 80)
     if EMULATOR_MODEL.search(model):
@@ -412,7 +494,7 @@ def _check_device(verdict, renderer, uad, nav, mobile, claimed_os) -> None:
         verdict.note("emulated", "x86 processor on Android")
 
 
-def _fingerprints(verdict, report, nav, scr, gpu, tz, claimed_os, renderer, mobile) -> None:
+def _fingerprints(verdict, report, nav, scr, tz, claimed_os, renderer, mobile) -> None:
     fp = _dict(report.get("fp"))
     visitor = fp.get("id")
     if isinstance(visitor, str) and re.fullmatch(r"[0-9a-f]{16,64}", visitor):
@@ -443,6 +525,8 @@ def _bot_score(verdict, report) -> int:
     duration = _number(act.get("ms"), 0) or 0
     interacted = any((_number(act.get(key), 0) or 0) > 0 for key in ("pointer", "keys", "touches", "scrolls"))
     if not interacted and duration < 1500:
+        score += 25
+    if verdict.weak_detector:
         score += 25
     if act.get("visible") is False:
         score += 15

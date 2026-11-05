@@ -12,7 +12,7 @@
   <main class="prose">
     <h1>Privacy</h1>
     <p class="muted">Last updated November 4, 2026.</p>
-    <p>AltWarden checks people who join Discord servers. This page says exactly what it reads, what it keeps, and for how long. The source code is public, so you can confirm every line here.</p>
+    <p>AltWarden checks people who join Discord servers. This page says exactly what it reads, what it keeps, and for how long. The source code is public, so you can check what the software does. The nightly backups named below are set up on this copy's server, outside that source.</p>
 
     <h2>The short version</h2>
     <ul>
@@ -20,7 +20,7 @@
       <li>Your Discord sign-in is revoked seconds after it's used.</li>
       <li>The verification page has no ads, analytics or other outside scripts.</li>
       <li>The hashes in one server can't be connected to the hashes in another. Your Discord ID is stored as it is, so staff can see who verified.</li>
-      <li>You can see and delete your data yourself at <a href="/my-data">My data</a>.</li>
+      <li>You can see and delete your data yourself at <a href="/my-data">My data</a>. Nightly backups keep a copy of the database for up to 14 days.</li>
     </ul>
 
     <h2>What is read during verification</h2>
@@ -28,57 +28,66 @@
       <tr><th>Data</th><th>What happens to it</th></tr>
       <tr><td>Discord ID, username, profile picture</td><td>Stored, so staff can see who verified.</td></tr>
       <tr><td>Whether two-factor login is on</td><td>Kept with your link while you can still retry. It goes when your attempt finishes, and otherwise when the link ends.</td></tr>
-      <tr><td>Your email address</td><td>Only requested if the server turned on the throwaway email check. The domain is compared with a list, then the address is dropped. It's never written down.</td></tr>
+      <tr><td>Your email address</td><td>Requested when the server has the throwaway email check on, and every preset turns it on. The domain is compared with a list, then the address is dropped. It's never written down.</td></tr>
       <tr><td>IP address</td><td>Compared in memory with lists of VPNs, data centers and countries. A keyed hash is stored for alt matching. The address isn't stored.</td></tr>
       <tr><td>Browser and device details</td><td>Compared to find spoofing, automation and virtual machines. Only the result is stored, as labels such as "private window". A browser identifier and a device value are stored as keyed hashes.</td></tr>
       <tr><td>Operating system and browser family</td><td>Stored as keyed hashes, so staff can see whether two linked accounts also share a system and browser. They never count toward a match.</td></tr>
       <tr><td>A random cookie</td><td>Set to recognize the same browser. Stored as a keyed hash.</td></tr>
     </table>
+    <p>Staff who sign in to the dashboard also share their Discord server list. AltWarden reads it once and keeps the ID, name and icon of the servers it's in, until that sign-in ends.</p>
 
     <h2>What a keyed hash means</h2>
-    <p>A keyed hash is a one-way scramble made with a secret key. AltWarden can tell whether two values match, but the hash can't be turned back into the address or fingerprint without that key. Every server has its own derived key, so the same person produces unrelated hashes in two servers. The key isn't stored in the database, so a copy of the database alone reveals nothing.</p>
+    <p>A keyed hash is a one-way scramble made with a secret key. AltWarden can tell whether two values match, but the hash can't be turned back into the address or fingerprint without that key. Every server has its own derived key, so the same person produces unrelated hashes in two servers. The key isn't stored in the database, so a copy of the database alone can't reverse them.</p>
+    <p>That copy would still show Discord IDs, names, attempt results and appeal text. A server's webhook secrets and any proxycheck.io key are encrypted under the same master key, so a copy alone reveals none of them, and a copy with the key reveals them all.</p>
 
     <h2>How long things are kept</h2>
     <table>
       <tr><th>Record</th><th>Default</th><th>A server can set</th></tr>
       <tr><td>Connection hash</td><td>30 days</td><td>1 to 365 days</td></tr>
       <tr><td>Browser, device, system and cookie hashes</td><td>365 days</td><td>30 to 730 days</td></tr>
-      <tr><td>Attempt history, staff audit log, decided appeals</td><td>365 days</td><td>30 to 730 days</td></tr>
+      <tr><td>Attempt history, staff audit log, appeals whether decided or not</td><td>365 days</td><td>30 to 730 days</td></tr>
       <tr><td>Links between accounts</td><td>365 days</td><td>Follows the browser and device setting</td></tr>
       <tr><td>Name and picture of someone who never tried to verify</td><td>365 days</td><td>Follows the attempt history setting</td></tr>
       <tr><td>That you verified, with your name and picture</td><td>Until you delete it</td><td>Needed to tell which of two matching accounts verified first, and to let you back in if the server remembers verified members</td></tr>
       <tr><td>Accounts staff marked as different people</td><td>Until either person deletes their data</td><td>Not a setting</td></tr>
-      <tr><td>Hashes of banned accounts, and the record of the ban</td><td>730 days</td><td>0 to 1,825 days</td></tr>
+      <tr><td>Browser, device, system and cookie hashes of banned accounts, and the record of the ban</td><td>730 days</td><td>0 to 1,825 days</td></tr>
       <tr><td>Verification links</td><td>1 hour, or the server's kick time</td><td>Bypass links last up to 7 days</td></tr>
+      <tr><td>Backup copies of the whole database</td><td>Up to 14 days</td><td>Not a setting</td></tr>
     </table>
-    <p>A timer deletes expired records automatically. If a server removes AltWarden, everything held for that server is deleted after 30 days, and <code>/uninstall</code> deletes it at once.</p>
+    <p>A timer deletes expired records automatically. If a server removes AltWarden, everything held for that server is deleted after 30 days, and <code>/uninstall</code> deletes it at once. Records for a server that never finished setting up go after 30 days too. Whatever is deleted can stay in a backup for up to 14 days, and then it's gone.</p>
 
     <h2>Cookies</h2>
     <table>
       <tr><th>Cookie</th><th>What it does</th><th>How long it lasts</th></tr>
-      <tr><td><code>__Host-aw_device</code></td><td>A random value that recognizes the same browser. Only its keyed hash is stored.</td><td>The server's browser hash setting, up to 400 days</td></tr>
-      <tr><td><code>__Host-aw_flow</code></td><td>Ties a Discord sign-in to the browser that started it.</td><td>15 minutes, and deleted when the sign-in ends</td></tr>
+      <tr><td><code>__Host-aw_device</code></td><td>A random value that recognizes the same browser. Only its keyed hash is stored.</td><td>The browser hash setting of the last server that checked you, up to 400 days, renewed at each check</td></tr>
+      <tr><td><code>__Host-aw_vflow</code></td><td>Ties a Discord sign-in on a verification link to the browser that started it.</td><td>15 minutes, and deleted when the sign-in ends</td></tr>
+      <tr><td><code>__Host-aw_flow</code></td><td>Ties a Discord sign-in for the dashboard or My data to the browser that started it.</td><td>15 minutes, and deleted when the sign-in ends</td></tr>
       <tr><td><code>__Host-aw_browser</code></td><td>Ties a verification link to the browser that signed in, so nobody can pass a check on someone else's browser. It's hashed together with the link, so it can't connect two servers.</td><td>Until you close your browser</td></tr>
-      <tr><td><code>__Host-aw_session</code></td><td>Keeps staff signed in to the dashboard, or a member signed in to My data.</td><td>12 hours for the dashboard, 30 minutes for members</td></tr>
+      <tr><td><code>__Host-aw_session</code></td><td>Keeps staff signed in to the dashboard, or a member signed in to My data.</td><td>12 hours for the dashboard, 30 minutes for members. Logging out ends every sign-in that person has here, in every browser.</td></tr>
     </table>
-    <p>None of them can be read by scripts, and none is shared with anyone. The dashboard also remembers its theme and accent color in your browser, which never leaves your device.</p>
+    <p>None of them can be read by scripts, and none is shared with anyone. The dashboard also remembers its theme and accent color in your browser, and those never leave your device.</p>
 
     <h2>Who can see what</h2>
     <p>A server's staff see your Discord name, your attempts, which check stopped you, and which account you were linked to and how strongly. They never see an IP address, email, cookie or fingerprint, because AltWarden doesn't have them in readable form. Staff never see your country.</p>
 
     <h2>Outside services</h2>
-    <p>Member pages load nothing from outside this site, apart from your Discord profile picture and the server's icon, which come from Discord's image service. AltWarden shares nothing with advertisers or data brokers.</p>
-    <p>One optional exception: a server can turn on an outside VPN lookup. If it does, your IP address is sent to <a href="https://proxycheck.io">proxycheck.io</a> during verification. It's off unless a server chooses it.</p>
+    <p>Member pages load nothing from outside this site, apart from the server's icon, which comes from Discord's image service. AltWarden shares nothing with advertisers or data brokers.</p>
+    <p>Two optional exceptions, both off unless a server chooses them. A server can turn on an outside VPN lookup. Your IP address then goes to <a href="https://proxycheck.io">proxycheck.io</a> during verification when the answer could change the result, meaning the VPN or Threat check is on, the lists haven't already flagged your address, and you aren't past a limit or skipping the VPN check. A server can also register webhooks. Those send your Discord ID and the result of your attempt to an address its staff chose.</p>
 
     <h2>Your choices</h2>
-    <p>Sign in at <a href="/my-data">My data</a> to see everything held about you and delete it, for one server or all of them, with no request to anyone. Deleting your records also removes your verified role, because there's nothing left to support it, and you can verify again whenever you like.</p>
-    <p>Deleting also removes staff records about you, such as a note that staff verified you, takes your name off anything you did as staff, and removes your ID from other people's records.</p>
-    <p>Two exceptions. If you're banned from a server, your hashes for that server stay until the ban ends or they expire, and they go at once when it ends. Otherwise a banned account could erase the only thing that catches its next account. Your name, picture and history are still deleted.</p>
-    <p>If a server limits attempts, makes you wait between them, or gives you a time limit to verify, your Discord ID stays with that count and timer, with no name or picture, until the attempt history setting removes it, counted from your last failed attempt. Otherwise deleting your data would reset the limit.</p>
-    <p>You can decline by not verifying. Each server decides whether it offers another way in.</p>
+    <p>Sign in at <a href="/my-data">My data</a> to see everything held about you and delete it, for one server or all of them, with no request to anyone. Deleting your records also removes your verified role, because there's nothing left to support it, and you can verify again whenever you like. If the server gives members a time limit to verify, your time starts again when you delete. Each server's staff get one line saying a member deleted their records, with no name in it.</p>
+    <p>Deleting also removes staff records about you, such as a note that staff verified you, replaces your name on anything you did as staff with a stand-in, and removes your ID from other people's records.</p>
+    <p>Some things stay.</p>
+    <ul>
+      <li>If you're banned from a server, your hashes for that server stay until the ban is lifted or the server's ban retention runs out, whichever comes first. A connection hash ends sooner, on its own date. If the ban is lifted, they all go at once. Otherwise a banned account could erase the only thing that catches its next account. Your name, picture and history are still deleted.</li>
+      <li>If a server limits attempts, makes you wait between them, or gives you a time limit to verify, your Discord ID stays with that count and timer, with no name or picture, until the attempt history setting removes it, counted from your last failed attempt. If you've used up a limit that never gives attempts back, it stays until staff reset you. Otherwise deleting your data would reset the limit.</li>
+      <li>Backups keep a copy for up to 14 days.</li>
+      <li>Messages AltWarden posted in a server's channels, such as logs, appeals and help threads, stay in Discord. Ask that server's staff to delete them.</li>
+    </ul>
+    <p>You can decline by not verifying. Each server decides whether there is another way in.</p>
 
     <h2>Automated decisions</h2>
-    <p>Each server chooses its rules, and AltWarden applies them automatically. If you think a result is wrong, use the Appeal button, and a person on that server's staff will review it.</p>
+    <p>Each server chooses its rules, and AltWarden applies them automatically. If you think a result is wrong, use the Appeal button if the server offers one, or ask its staff. A person on that server's staff decides.</p>
 
     <h2>Children</h2>
     <p>AltWarden is for people old enough to use Discord in their country.</p>

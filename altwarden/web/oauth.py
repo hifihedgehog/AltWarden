@@ -2,8 +2,9 @@
 
 Follows the authorization code grant in Discord's OAuth2 topic: a `state` value tied to this
 browser, an exchange of the code for a token, one read of /users/@me, and then the token is revoked
-under RFC 7009. Discord's docs state that revoking a token ends the whole authorization, so no
-access or refresh token outlives the request.
+under RFC 7009. Discord's docs state that revoking a token ends the whole authorization. No access
+or refresh token is ever stored. If Discord refuses or doesn't answer all three revoke tries, the
+token stays valid at Discord until its own expiry, and the log says so.
 """
 from __future__ import annotations
 
@@ -18,10 +19,17 @@ log = logging.getLogger("altwarden.oauth")
 API = "https://discord.com/api/v10"
 AUTHORIZE = "https://discord.com/oauth2/authorize"
 COMMAND_PERMISSION_TYPES = {"role": 1, "user": 2, "channel": 3}
+REVOKE_TRIES = 3
+REVOKE_SECONDS = 5
 
 
 class OAuthError(Exception):
     pass
+
+
+# What a talk with Discord can end in. A total timeout raises plain TimeoutError, which isn't a ClientError,
+# and a 200 with a body that isn't JSON raises ValueError.
+FAILURES = (OAuthError, aiohttp.ClientError, TimeoutError, ValueError)
 
 
 class DiscordOAuth:
@@ -46,7 +54,7 @@ class DiscordOAuth:
             if response.status != 200:
                 raise OAuthError(f"token exchange returned {response.status}")
             body = await response.json()
-        token = body.get("access_token")
+        token = body.get("access_token") if isinstance(body, dict) else None
         if not token:
             raise OAuthError("token exchange returned no token")
         return token
@@ -58,14 +66,27 @@ class DiscordOAuth:
                 raise OAuthError(f"{path} returned {response.status}")
             return await response.json()
 
+    async def read_me(self, token: str) -> dict:
+        """The signed-in account. An answer with no ID is a failure, because everything after it keys on the ID."""
+        me = await self.read(token, "/users/@me")
+        if not isinstance(me, dict) or not me.get("id"):
+            raise OAuthError("/users/@me returned no account")
+        return me
+
     async def revoke(self, token: str) -> None:
+        """End the authorization. This runs after the account has been read, so a failure here is logged and never costs the sign-in."""
         data = {"token": token, "token_type_hint": "access_token"}
-        try:
-            async with self.session.post(f"{self.api}/oauth2/token/revoke", data=data, auth=self._auth()) as response:
-                if response.status != 200:
-                    log.warning("Token revocation returned %s", response.status)
-        except aiohttp.ClientError as exc:
-            log.warning("Token revocation failed: %s", type(exc).__name__)
+        problem = "no answer"
+        for _ in range(REVOKE_TRIES):
+            try:
+                async with self.session.post(f"{self.api}/oauth2/token/revoke", data=data, auth=self._auth(),
+                                             timeout=aiohttp.ClientTimeout(total=REVOKE_SECONDS)) as response:
+                    if response.status == 200:
+                        return
+                    problem = f"status {response.status}"
+            except Exception as exc:
+                problem = type(exc).__name__
+        log.warning("Token revocation failed after %s tries: %s. The token lasts until Discord expires it.", REVOKE_TRIES, problem)
 
     async def edit_command_permissions(self, token: str, guild_id: str, command_id: str, overrides: list[dict]) -> int:
         """Replace one command's overrides with the signed-in person's own token. Returns the HTTP status."""
@@ -79,18 +100,23 @@ class DiscordOAuth:
                 status = response.status
                 if status != 429:
                     return status
-                wait = (await response.json(content_type=None)).get("retry_after", 1)
-            await asyncio.sleep(min(float(wait), 10))
+                try:
+                    wait = float((await response.json(content_type=None)).get("retry_after", 1))
+                except (ValueError, TypeError, AttributeError):
+                    wait = 1.0
+            await asyncio.sleep(min(wait, 10))
         return status
 
     async def identify(self, code: str, redirect_uri: str, *, guilds: bool = False) -> tuple[dict, list]:
         """Sign someone in, read who they are, and end the authorization, all in one step."""
         token = await self.exchange(code, redirect_uri)
         try:
-            me = await self.read(token, "/users/@me")
+            me = await self.read_me(token)
             joined = await self.read(token, "/users/@me/guilds") if guilds else []
         finally:
             await self.revoke(token)
+        if not isinstance(joined, list) or not all(isinstance(guild, dict) and guild.get("id") for guild in joined):
+            raise OAuthError("/users/@me/guilds returned no list of servers")
         return me, joined
 
 

@@ -68,6 +68,7 @@ class InstantMode(Helpers):
         await self.service.on_join(self.port.add_member(OTHER_USER))
         self.assertEqual(self.dms_to(OTHER_USER), [])
         await self.core(mode="instant", auto_dm=True, remember_rejoin=False)
+        self.port.members[(GUILD, OTHER_USER)].role_ids = ()  # leaving takes a member's roles, and someone joining with the role is left alone
         await self.service.on_join(self.port.members[(GUILD, OTHER_USER)])
         self.assertTrue(self.dms_to(OTHER_USER))
 
@@ -329,7 +330,7 @@ class Honeypot(Helpers):
         document["core"]["logs"]["modules"]["honeypot"] = LOG_CHANNEL
         await self.service.save_settings(GUILD, document)
         self.port.delete_works = False
-        await self.service.honeypot_hit(GUILD, OTHER_USER, "x", LOG_CHANNEL, "1", role_ids=())
+        await self.service.honeypot_hit(GUILD, OTHER_USER, LOG_CHANNEL, "1", role_ids=())
         self.assertIn("Manage Messages", self.logged())
 
 
@@ -688,7 +689,8 @@ class WhatDeletionDeletes(Helpers):
         await self.seed()
         await self.service.delete_my_data(OLD_USER)
         row = await self.db.one("SELECT actor_id, actor_name, kind FROM audit WHERE kind = 'bypass'")
-        self.assertEqual((row["actor_id"], row["actor_name"]), (None, "Deleted account"))
+        self.assertIsNone(row["actor_id"])
+        self.assertRegex(row["actor_name"], r"^Deleted account [0-9a-f]{8}$")
 
     async def test_deleting_works_with_no_records_anywhere(self):
         self.assertEqual(await self.service.delete_my_data("175928847299117777"), {"removed": [], "kept_for_ban": []})
@@ -870,8 +872,8 @@ class Safety(Base):
         await self.db.touch_member(GUILD, STAFF)
         await self.db.update_member(GUILD, STAFF, status="verified", joined_at=old)
         removed = await self.db.purge_expired({GUILD: document})
-        self.assertEqual((removed["audit"], removed["appeals"], removed["links"], removed["members"]), (1, 1, 1, 1))
-        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM appeals"), 1, "an open appeal waits for a decision")
+        self.assertEqual((removed["audit"], removed["appeals"], removed["links"], removed["members"]), (1, 2, 1, 1))
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM appeals"), 0, "an open appeal ends with the attempts it's about")
         self.assertIsNotNone(await self.db.member(GUILD, STAFF), "a verified member's record stays")
 
 
@@ -1304,7 +1306,7 @@ class PinPermission(unittest.TestCase):
     def test_administrator_brings_no_warning(self):
         guild = self.view()
         guild.bot_permissions = frozenset({"administrator"})
-        report = health.report(guild, self.document())
+        report = health.report(guild, self.document(raid={"enabled": False}))  # with raid mode on and no logs, staff have a problem to hear about
         self.assertTrue(report["has_administrator"])
         self.assertTrue(report["healthy"], report["issues"])
         self.assertNotIn("advice", report)

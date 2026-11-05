@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from altwarden import crypto, db, notices, settings
 from altwarden.netintel import NetIntel, load_lists
 from altwarden.service import Service
-from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, SESSION_COOKIE, build_app
+from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, SESSION_COOKIE, VERIFY_FLOW_COOKIE, build_app
 from altwarden.web.oauth import DiscordOAuth
 from fakes import (CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE, FakeDiscordApi,
                    FakePort)
@@ -67,7 +67,12 @@ class Base(unittest.IsolatedAsyncioTestCase):
         async def post_message(guild_id, which):
             self.posted.append(which)
         self.app["post_message"] = post_message
-        self.client = TestClient(TestServer(self.app), cookie_jar=aiohttp.CookieJar(unsafe=True))
+
+        async def check_lookup_key(key):
+            return True
+        self.app["check_lookup_key"] = check_lookup_key
+        # The proxy adds this line to every real request, and a verify POST with no member address is refused.
+        self.client = TestClient(TestServer(self.app), cookie_jar=aiohttp.CookieJar(unsafe=True), headers={"X-Forwarded-For": "203.0.113.9"})
         await self.client.start_server()
 
     def database_dump(self) -> str:
@@ -104,10 +109,10 @@ class Base(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 302)
         location = response.headers["Location"]
         state = parse_qs(urlsplit(location).query)["state"][0]
-        self.jar[FLOW_COOKIE] = response.cookies[FLOW_COOKIE].value
+        self.jar[VERIFY_FLOW_COOKIE] = response.cookies[VERIFY_FLOW_COOKIE].value
         self.discord.user["id"] = user
         response = await self.client.get("/verify/callback", params={"code": "abc", "state": state}, allow_redirects=False,
-                                         headers=self.cookie_header(FLOW_COOKIE, BROWSER_COOKIE))
+                                         headers=self.cookie_header(VERIFY_FLOW_COOKIE, BROWSER_COOKIE))
         if BROWSER_COOKIE in response.cookies:
             self.jar[BROWSER_COOKIE] = response.cookies[BROWSER_COOKIE].value
         return response
@@ -210,10 +215,10 @@ class SignInGuards(Base):
     async def test_state_is_single_use(self):
         token = await self.link_for()
         await self.sign_in(token)
-        flow = self.jar[FLOW_COOKIE]
+        flow = self.jar[VERIFY_FLOW_COOKIE]
         state = flow.split(".")[0]
         response = await self.client.get("/verify/callback", params={"code": "abc", "state": state}, allow_redirects=False,
-                                         headers={"Cookie": f"{FLOW_COOKIE}={flow}"})
+                                         headers={"Cookie": f"{VERIFY_FLOW_COOKIE}={flow}"})
         self.assertEqual(response.headers["Location"], "/help/link-expired")
 
     async def test_wrong_account(self):
@@ -226,9 +231,9 @@ class SignInGuards(Base):
         token = await self.link_for()
         response = await self.client.get(f"/v/{token}/signin", allow_redirects=False)
         state = parse_qs(urlsplit(response.headers["Location"]).query)["state"][0]
-        flow = response.cookies[FLOW_COOKIE].value
+        flow = response.cookies[VERIFY_FLOW_COOKIE].value
         response = await self.client.get("/verify/callback", params={"error": "access_denied", "state": state}, allow_redirects=False,
-                                         headers={"Cookie": f"{FLOW_COOKIE}={flow}"})
+                                         headers={"Cookie": f"{VERIFY_FLOW_COOKIE}={flow}"})
         self.assertIn("signin=declined", response.headers["Location"])
 
     async def test_discord_failure_is_reported(self):
@@ -404,6 +409,7 @@ class AltFlow(Base):
     async def test_alt_of_a_banned_account_is_banned(self):
         await self.change(alt_account={"enabled": True, "alt_action": "deny", "action": "deny", "banned_alt_action": "ban"})
         await self.verify_through(OLD_USER)
+        self.port.banned.add(OLD_USER)  # Discord is asked, and a ban only the record holds counts as lifted
         await self.service.on_ban(GUILD, OLD_USER)
         self.port.add_member(OTHER_USER)
         result = await self.verify_through(OTHER_USER)
@@ -544,23 +550,23 @@ class Honeypot(Base):
 
     async def test_post_is_deleted_and_acted_on(self):
         await self.turn_on("ban")
-        await self.service.honeypot_hit(GUILD, OLD_USER, "x", LOG_CHANNEL, "55", role_ids=())
+        await self.service.honeypot_hit(GUILD, OLD_USER, LOG_CHANNEL, "55", role_ids=())
         self.assertTrue(self.port.did("delete_message"))
         self.assertEqual(self.port.did("ban")[0][3], 3600)
 
     async def test_softban_unbans_again(self):
         await self.turn_on("softban")
-        await self.service.honeypot_hit(GUILD, OLD_USER, "x", LOG_CHANNEL, "55", role_ids=())
+        await self.service.honeypot_hit(GUILD, OLD_USER, LOG_CHANNEL, "55", role_ids=())
         self.assertTrue(self.port.did("ban") and self.port.did("unban"))
 
     async def test_whitelisted_role_is_ignored(self):
         await self.turn_on("ban", roles=[VERIFIED_ROLE])
-        await self.service.honeypot_hit(GUILD, OLD_USER, "x", LOG_CHANNEL, "55", role_ids=(VERIFIED_ROLE,))
+        await self.service.honeypot_hit(GUILD, OLD_USER, LOG_CHANNEL, "55", role_ids=(VERIFIED_ROLE,))
         self.assertFalse(self.port.did("delete_message"))
 
     async def test_webhook_is_only_logged(self):
         await self.turn_on("ban")
-        await self.service.honeypot_hit(GUILD, "1", "hook", LOG_CHANNEL, "55", role_ids=(), is_webhook=True)
+        await self.service.honeypot_hit(GUILD, "1", LOG_CHANNEL, "55", role_ids=(), is_webhook=True)
         self.assertFalse(self.port.did("ban"))
         self.assertTrue(self.port.did("delete_message"))
 
@@ -705,7 +711,7 @@ class WebSecurity(Base):
 
     async def test_no_cookie_is_readable_by_scripts(self):
         response = await self.client.get(f"/v/{await self.link_for()}/signin", allow_redirects=False)
-        morsel = response.cookies[FLOW_COOKIE]
+        morsel = response.cookies[VERIFY_FLOW_COOKIE]
         self.assertTrue(morsel["httponly"] and morsel["secure"])
         self.assertEqual(morsel["samesite"], "Lax")
 
@@ -761,8 +767,8 @@ class Dashboard(Base):
         key = "111111-222222-333333-444444"
         response = await self.client.put(url, json={"key": key}, headers=await self.csrf())
         self.assertEqual(response.status, 200, await response.text())
-        self.assertEqual((await response.json())["lookup_key"], {"saved": True, "ending": "4444"})
-        self.assertEqual(await self.db.lookup_key(GUILD), key)
+        self.assertTrue((await response.json())["lookup_key"]["saved"])
+        self.assertEqual(await self.service.lookup_key(GUILD), key)
         page = await self.client.get(f"/api/guilds/{GUILD}/settings", headers=self.session_cookie)
         text = await page.text()
         self.assertNotIn(key, text)
@@ -816,7 +822,7 @@ class Dashboard(Base):
 
         async def lookup(ip, key):
             asked.append((ip, key))
-            return True
+            return {"proxy": False, "vpn": True, "tor": False, "hosting": False}
 
         self.service.proxycheck = lookup
         document = await self.service.get_settings(GUILD)
@@ -824,7 +830,7 @@ class Dashboard(Base):
         document["checks"]["vpn"].update(enabled=True, action="deny")
         await self.service.save_settings(GUILD, document)
         await self.db.set_lookup_key(GUILD, "abcdef-123456")
-        result = await self.verify_through()
+        result = await self.verify_through(ip="8.8.4.4")  # a reserved address never goes out
         self.assertEqual(asked[0][1], "abcdef-123456")
         self.assertEqual(result["status"], "failed", result)
 
@@ -833,10 +839,10 @@ class Dashboard(Base):
 
         async def lookup(ip, key):
             asked.append(ip)
-            return True
+            return {"proxy": False, "vpn": True, "tor": False, "hosting": False}
 
         self.service.proxycheck = lookup
-        await self.verify_through()
+        await self.verify_through(ip="8.8.4.4")
         self.assertEqual(asked, [])
 
     async def test_save_settings_writes_the_audit_log(self):
@@ -893,6 +899,7 @@ class Dashboard(Base):
         self.assertTrue(detail["attempts"])
 
     async def test_health_report(self):
+        await self.db.set_guild_field(GUILD, "verify_message_id", f"{CHANNEL}:1")  # Health says so when the Verify post is missing
         await self.log_in()
         data = await (await self.client.get(f"/api/guilds/{GUILD}/health", headers=self.session_cookie)).json()
         self.assertTrue(data["healthy"], data["issues"])

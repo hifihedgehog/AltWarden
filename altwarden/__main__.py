@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import aiohttp
+import discord
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -29,6 +30,10 @@ from .web.app import STATIC, build_app
 from .web.oauth import DiscordOAuth
 
 log = logging.getLogger("altwarden")
+
+SHUTDOWN_SECONDS = 10
+# What the service unit's RestartPreventExitStatus names. A restart can't fix either cause, and each try spends an IDENTIFY call.
+EXIT_NO_RESTART = 78
 
 
 def load_regions() -> dict:
@@ -62,7 +67,7 @@ async def run(args: argparse.Namespace) -> None:
     await db.open()
     # Whatever fails below, the database has to close. Its worker thread keeps the process alive
     # otherwise, and a process that won't die is one systemd never restarts.
-    bot = http = webhook_http = runner = refresh = stop_waiter = None
+    bot = http = webhook_http = runner = refresh = stop_waiter = service = None
     try:
         net = NetIntel(data_dir / "lists")
         await net.load()
@@ -70,6 +75,7 @@ async def run(args: argparse.Namespace) -> None:
         bot = AltWardenBot()
         service = Service(db, keys, net, bot.gateway, args.public_url, load_regions(), load_zone_countries())
         bot.service = service
+        await service.seal_stored_secrets()
 
         http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
         token = os.environ["DISCORD_TOKEN"]
@@ -82,6 +88,7 @@ async def run(args: argparse.Namespace) -> None:
         app = build_app(service, keys, oauth, trust_proxy=True)
         app["http"] = http
         app["public_bot"] = application.bot_public
+        app["application_info"] = bot.application_info  # for a fresh read of Public Bot, which can change while this runs
         webhook_http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicResolver()))
         app["webhook_http"] = webhook_http
         app["post_message"] = bot.post_message
@@ -106,17 +113,23 @@ async def run(args: argparse.Namespace) -> None:
             connection.result()  # a failed login or gateway error should end the process, so systemd restarts it
         log.info("Shutting down")
     finally:
-        for task in (stop_waiter, refresh):
-            if task is not None:
-                task.cancel()
-        if runner is not None:
-            await runner.cleanup()
-        for session in (http, webhook_http):
-            if session is not None:
-                await session.close()
-        if bot is not None:
-            await bot.close()
-        await db.close()
+        # In the order things depend on each other. Handlers still running use the database and can send webhooks,
+        # so the bot goes before the sessions, and the database goes last.
+        try:
+            for task in (stop_waiter, refresh):
+                if task is not None:
+                    task.cancel()
+            if runner is not None:
+                await runner.cleanup()
+            if bot is not None:
+                await bot.close()
+            if service is not None and service._background:
+                await asyncio.wait(service._background, timeout=SHUTDOWN_SECONDS)
+            for session in (http, webhook_http):
+                if session is not None:
+                    await session.close()
+        finally:
+            await db.close()
 
 
 def main() -> None:
@@ -132,7 +145,14 @@ def main() -> None:
         sys.exit(f"Missing from .env: {', '.join(missing)}")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("discord").setLevel(logging.WARNING)
-    asyncio.run(run(args))
+    try:
+        asyncio.run(run(args))
+    except discord.LoginFailure:
+        log.critical("Discord refused the bot token. Put the right one in DISCORD_TOKEN, then start the service again.")
+        sys.exit(EXIT_NO_RESTART)
+    except discord.PrivilegedIntentsRequired:
+        log.critical("Discord refused the Server Members intent. Turn it on in the Developer Portal, then start the service again.")
+        sys.exit(EXIT_NO_RESTART)
 
 
 if __name__ == "__main__":

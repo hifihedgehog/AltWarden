@@ -5,11 +5,14 @@ let strings = {};
 
 export async function loadLanguage() {
   const wanted = (navigator.language || "en").slice(0, 2).toLowerCase();
-  document.documentElement.lang = wanted;
   if (!SUPPORTED.includes(wanted)) return;
   try {
-    const response = await fetch(`/static/i18n/${wanted}.json`);
-    if (response.ok) strings = await response.json();
+    const response = await fetch(`/static/i18n/${wanted}.json`, { signal: AbortSignal.timeout?.(20000) });
+    if (response.ok) {
+      strings = await response.json();
+      // Only now, or a screen reader would read English text in the wrong voice. The Chinese strings are Simplified, for every Chinese browser.
+      document.documentElement.lang = wanted === "zh" ? "zh-Hans" : wanted;
+    }
   } catch {
     strings = {};
   }

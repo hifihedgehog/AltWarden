@@ -9,19 +9,20 @@
 </head>
 <body>
   <header class="site-header"><a class="brand" href="/"><img src="/static/img/logo.svg" alt="">AltWarden</a>
-    <nav class="site-nav"><a href="/help">Member help</a><a class="button small primary" href="/dashboard">Dashboard</a></nav></header>
+    <nav class="site-nav" aria-label="Main"><a href="/help">Member help</a><a class="button small primary" href="/dashboard">Dashboard</a></nav></header>
   <main class="prose">
     <h1>Docs</h1>
 
     <h2>Set it up</h2>
+    <p>This copy runs only on its owner's servers. To use AltWarden on your own, <a href="#host-it-yourself">host your own copy</a>, then follow these steps.</p>
     <ol>
-      <li>Add AltWarden to your server with the link it writes to its log when it starts. Only the owner of the Discord app can use that link while Public Bot is off in the Discord Developer Portal, and it should stay off. The link asks for Administrator by default. If you untick it, Health names the permissions AltWarden needs for the features you use.</li>
+      <li>Add AltWarden to your server with the link it writes to its log when it starts. Only the owner of the Discord app can use that link while Public Bot is off in the Discord Developer Portal, and it should stay off. The link asks for Administrator by default.</li>
       <li>In Server Settings, Roles, drag AltWarden's role above the role it will give out. Administrator doesn't change this, because Discord only lets a bot give roles below its own highest role.</li>
       <li>Run <code>/setup</code>, or open the <a href="/dashboard">dashboard</a>, and pick a verified role and a verification channel. Unless you're an Administrator, the role has to sit below your own highest role.</li>
       <li>Lock your channels so only the verified role can see them, and leave the verification channel visible.</li>
       <li>Open Health on the dashboard, or run <code>/health</code>, to catch anything missing.</li>
     </ol>
-    <p>Switching from another bot? Run <code>/import-members</code> with your existing verified role, and those members won't be asked to verify while they stay in the server.</p>
+    <p>Switching from another bot? Run <code>/import-members</code> with the role your members already hold. They're marked verified, and they won't be asked to verify while they stay in the server. No roles are given, so anyone missing the verified role gets it by pressing Verify, with no checks. Someone who leaves and rejoins verifies again, unless you turn on Remember verified members.</p>
 
     <h2>Lock down your server</h2>
     <p>Set the verification channel so new members can read it but can't chat in it.</p>
@@ -49,49 +50,49 @@
     <h2>Actions</h2>
     <table>
       <tr><th>Action</th><th>What happens</th></tr>
-      <tr><td>Watch</td><td>The match is recorded and the member gets in. Use this to learn what a rule would catch.</td></tr>
+      <tr><td>Watch</td><td>The match is recorded and the member gets in. Use this to learn what a rule would catch. No preset is built on it, so a rule watches only when you set it to.</td></tr>
       <tr><td>Deny</td><td>The member isn't verified and can try again.</td></tr>
-      <tr><td>Kick</td><td>The member is told why, then kicked.</td></tr>
-      <tr><td>Ban</td><td>The member is told why, then banned.</td></tr>
+      <tr><td>Kick</td><td>The member is told by DM, then kicked.</td></tr>
+      <tr><td>Ban</td><td>The member is told by DM, then banned.</td></tr>
     </table>
-    <p>Every enabled check runs on every attempt, and the strongest action wins. A failure set to Deny can't hide a match set to Ban.</p>
+    <p>Every enabled check runs on an attempt, and the strongest action wins. A failure set to Deny can't hide a match set to Ban. Two things end an attempt before that: a cooldown still running, and an attempt limit already used up with its action on Deny. Neither sends a DM or a log line, or records an attempt. In Instant mode there is no page to show the answer on, so each rejoin past the limit gets one DM.</p>
 
     <h2>Rules</h2>
     <p>Every rule is optional. Rules that can't run in the current mode stay saved, and the Rules page marks them as paused.</p>
     <table>
       <tr><th>Rule</th><th>What it catches</th><th>Runs in</th></tr>
-      <tr><td>Attempt limit</td><td>Too many failed tries. Attempts can come back after 5 minutes to 30 days, and members are told when.</td><td>Every mode</td></tr>
+      <tr><td>Attempt limit</td><td>Too many failed tries. The limit's action applies on the attempt that reaches it, and the stronger of that and the failed check's action wins. A match below confirmed can't remove anyone through the limit: when it's the only other thing wrong, a limit on Kick or Ban holds at Deny. Attempts can come back after 5 minutes to 30 days, or never. Members see how many tries they have left, and when attempts come back.</td><td>Every mode</td></tr>
       <tr><td>Account age</td><td>Accounts younger than a set age, up to 10 years. Members are told when they'll be old enough.</td><td>Every mode</td></tr>
       <tr><td>Profile picture</td><td>Accounts with no picture.</td><td>Every mode</td></tr>
       <tr><td>Cooldown</td><td>Retries too soon after a failure. A wait isn't a failure, so it isn't logged.</td><td>Every mode</td></tr>
       <tr><td>Two-factor login</td><td>Accounts without two-factor login.</td><td>Web page</td></tr>
       <tr><td>Throwaway email</td><td>Accounts on a temporary inbox, and accounts with no verified email at all. Only the domain is checked, so a verified address at a major provider always passes.</td><td>Web page</td></tr>
-      <tr><td>Alt accounts</td><td>A second account of someone who verified here, even one who left or was banned. An account that tried and never got in doesn't count.</td><td>Web page</td></tr>
-      <tr><td>VPN and proxy</td><td>VPNs, proxies, Tor, data centers and iCloud Private Relay.</td><td>Web page</td></tr>
-      <tr><td>Mobile data</td><td>Carrier networks.</td><td>Web page</td></tr>
-      <tr><td>Country rules</td><td>A block list or an allow list, with an action per continent, region or country. Logs never show a member's country.</td><td>Web page</td></tr>
-      <tr><td>Automated browser</td><td>Browsers driven by Selenium, Puppeteer and similar tools.</td><td>Web page</td></tr>
-      <tr><td>Anti-detect browser</td><td>Browsers that invent a new device for every profile.</td><td>Web page</td></tr>
+      <tr><td>Alt accounts</td><td>A second account of someone who verified here, even one who left or was banned. An account that tried and never got in doesn't count. See <a href="#alt-matching">how alt matching works</a>.</td><td>Web page</td></tr>
+      <tr><td>VPN and proxy</td><td>VPNs, proxies, Tor, data centers and iCloud Private Relay, from lists searched in memory. A server can add an outside lookup.</td><td>Web page</td></tr>
+      <tr><td>Mobile data</td><td>Carrier networks, by the address or by what the browser reports.</td><td>Web page</td></tr>
+      <tr><td>Country rules</td><td>A block list or an allow list, with an action per continent, region or country. On an allow list, an address the lists can't place doesn't pass, once a country list has loaded for that kind of address. Logs never show a member's country.</td><td>Web page</td></tr>
+      <tr><td>Automated browser</td><td>Browsers driven by Selenium, Puppeteer and similar tools, and reports a real page couldn't have sent, such as one with sections missing or from a browser that drops the device cookie.</td><td>Web page</td></tr>
+      <tr><td>Anti-detect browser</td><td>Browsers that invent a new device for every profile, seen as functions rewritten across two or more families, or a worker that sees a different device.</td><td>Web page</td></tr>
       <tr><td>Browser tampering</td><td>Rewritten built-in functions, scored from 1 to 100.</td><td>Web page</td></tr>
       <tr><td>Fake browser identity</td><td>A browser claiming to be a different browser or system.</td><td>Web page</td></tr>
-      <tr><td>Developer tools</td><td>Developer tools open during the check, and scripts driving the browser through them. Not available on Safari.</td><td>Web page</td></tr>
-      <tr><td>Private window</td><td>Private and incognito windows.</td><td>Web page</td></tr>
-      <tr><td>Fingerprint blocking</td><td>Browsers that randomize or hide device details.</td><td>Web page</td></tr>
+      <tr><td>Developer tools</td><td>Developer tools open during the check, and scripts driving the browser through them. Not available on Safari or phones.</td><td>Web page</td></tr>
+      <tr><td>Private window</td><td>Private and incognito windows. Chrome's Guest mode can read as one too.</td><td>Web page</td></tr>
+      <tr><td>Fingerprint blocking</td><td>Browsers that randomize or hide device details: Brave with Shields up, Tor Browser, Firefox with fingerprint resistance or canvas noise, blocked verification scripts, and extensions that wrap the canvas or hide the graphics chip. Safari's own canvas noise doesn't count.</td><td>Web page</td></tr>
       <tr><td>Threat score</td><td>Two scores. The bot score rates automation, and the suspect score adds up many small signals.</td><td>Web page</td></tr>
-      <tr><td>Virtual machine</td><td>Virtual machines and software graphics.</td><td>Web page</td></tr>
-      <tr><td>Modified phone</td><td>Android emulators, custom firmware, and phones whose model doesn't fit their hardware. A web page can't read root status directly, so a rooted phone that changes nothing passes.</td><td>Web page</td></tr>
+      <tr><td>Virtual machine</td><td>Virtual machines and software graphics. A PC with hardware acceleration off looks like a virtual machine with 3D off, so it counts, and the member is told how to turn acceleration on.</td><td>Web page</td></tr>
+      <tr><td>Modified phone</td><td>Android emulators, and Pixel phones whose model doesn't fit their graphics chip or whose Android is newer than that model ever got.</td><td>Web page</td></tr>
     </table>
 
     <h2>Presets</h2>
     <table>
       <tr><th>Preset</th><th>Meant for</th></tr>
-      <tr><td>Gentle</td><td>Learning. Every check only records what it sees, apart from Two-factor login, which no preset changes.</td></tr>
-      <tr><td>Standard</td><td>The default. Stops anyone who fails a check, and kicks alt accounts and fake browser identities. Members who are stopped are told why and can try again.</td></tr>
-      <tr><td>Strict</td><td>Servers under attack. Turns on Auto Kick. Expect some real members to need staff help.</td></tr>
+      <tr><td>Gentle</td><td>Stops throwaway emails, fake browser identities and alt accounts. Everything else stays off. Two-factor login keeps its own setting. All three deny, so nobody is removed.</td></tr>
+      <tr><td>Standard</td><td>Stops anyone who fails a check. Kicks fake browser identities, and alt accounts proven by the browser cookie. The default. An alt of a banned account is banned on the same proof. Denied members can try again, up to 5 times, and attempts come back after a day. Profile picture and Mobile data stay off.</td></tr>
+      <tr><td>Strict</td><td>For servers under attack. Kicks or bans on most failures, and removes anyone who doesn't verify within 10 minutes. Accounts must be 30 days old. Three failed attempts end it for good. Alts proven by the cookie are banned, and the earlier account is kicked. Mobile data, Developer tools and Fingerprint blocking deny.</td></tr>
     </table>
-    <p>A preset changes nothing until you save. It never touches roles, channels, messages, logs, alerts, country rules, the help desk, the honeypot, cooldown or the two-factor rule.</p>
+    <p>A preset changes nothing until you save. It sets every check it covers, with that check's thresholds, so your own numbers for those checks are replaced. It turns on Auto DM and the closed-DM notice at 30 seconds. Strict turns Auto Kick on at 10 minutes, and the other two turn it off. A preset never touches roles, channels, messages, logs, alerts, country rules, the help desk, the honeypot, cooldown or the two-factor rule.</p>
 
-    <h2>How alt matching works</h2>
+    <h2 id="alt-matching">How alt matching works</h2>
     <p>Each kind of evidence carries a weight, and the total sets the confidence.</p>
     <table>
       <tr><th>Evidence</th><th>Weight</th></tr>
@@ -99,48 +100,58 @@
       <tr><td>Same browser fingerprint</td><td>45, or 10 on phones, tablets and Chromebooks, which look alike</td></tr>
       <tr><td>Same connection</td><td>35, or 10 on mobile, VPN and carrier-shared addresses</td></tr>
       <tr><td>Same kind of device, across browsers</td><td>20</td></tr>
+      <tr><td>Same kind of device on the same connection, neither weak</td><td>15 more</td></tr>
     </table>
-    <p>A total of 100 is <strong>confirmed</strong>, 70 is <strong>likely</strong>, and 30 is <strong>possible</strong>. By default AltWarden acts on likely or stronger, so a shared home connection alone never stops a sibling, and neither do two phones of one model on the same Wi-Fi. Matches only ever compare accounts in your own server.</p>
+    <p>A total of 100 is <strong>confirmed</strong>, 70 is <strong>likely</strong>, and 30 is <strong>possible</strong>. Only the cookie is signed by this site, so without it a total stops at 99, and confirmed always means the same browser. By default AltWarden acts on likely or stronger, so a shared home connection alone never stops a sibling, and neither do two phones of one model on the same Wi-Fi. A second browser on one PC at home scores 70, and two identical laptops in one home score higher, so both are stopped and have to appeal. Matches only ever compare accounts in your own server.</p>
+    <p>Only a confirmed match can remove anyone. Below confirmed, an action above Deny drops to Deny, the action on the earlier account drops to Watch, and the log says the action was lowered. A link without the cookie stops the account and removes no one by itself. Auto Kick still removes anyone who hasn't verified in time, because it's a clock and not evidence.</p>
+    <p>A match to a banned account counts from 60, whatever your setting, so a ban evader who clears cookies and changes network is stopped by the fingerprint and device value (65). It's below confirmed, so it ends in a Deny and an appeal. A shared connection alone doesn't reach 60. Every other match keeps your setting.</p>
+    <p>A match that reaches possible but not your setting, to an account that verified or was banned, is recorded as Watch. Staff see it, the member gets in, and nothing acts on anyone. A match with nothing behind it but the same kind of device, or evidence that's weak on that attempt, isn't recorded, so two strangers with one phone model don't ping anyone.</p>
     <p>The account that verified first counts as the main one. If it verifies again later, it gets the action for the main account, not the action for an alt.</p>
-    <p>An alt of a banned account has its own action, so you can ban ban evaders and only deny everyone else. If two accounts are really two people, approve the appeal with "trust the link", or run <code>/trust-accounts</code>, and they won't match again.</p>
+    <p>An alt of a banned account has its own action, so you can ban ban evaders and only deny everyone else. If two accounts are really two people, approve the appeal with "trust the link", or run <code>/trust-accounts</code>, and they won't match again. Trusting also gives both accounts their attempts back and takes the limit role away. A plain Approve lets the member in now and leaves the link standing, so it stops them again if they rejoin.</p>
+
+    <h2>Outside VPN lookup</h2>
+    <p>A server can add a proxycheck.io key on the Rules page. The key is encrypted when it's stored, and a key proxycheck.io doesn't recognize is refused. AltWarden asks only when the answer could change the result: the VPN or Threat check is on, the lists haven't already flagged the address, the address is public, and the member isn't past a limit or skipping the VPN check. An answer is kept for an hour per network. One network, meaning an IPv6 /48 or an IPv4 /24, can spend at most 50 lookups a day, and past that the check runs on the lists alone. One member can spend at most 20 lookups a day. With the attempt limit off, a member past that counts as on a VPN, because twenty networks in a day isn't someone at home.</p>
+    <p>A failed or skipped lookup stops nobody, because anyone can use up a quota by verifying over and over. When a lookup fails, staff are told once a day in the log and on the Health page until one works again.</p>
 
     <h2>Staff tools</h2>
     <p><strong>Logs.</strong> Each rule has its own log module, and staff actions, verified members, Auto Kick, the help desk, the honeypot, raids, appeals and settings changes each have one too. Send each to its own channel, a whole category to one channel, or everything to one channel. Logs never show an IP address, email, cookie, fingerprint or country.</p>
     <p><strong>Alerts.</strong> Ping a role in a module's channel whenever that rule catches someone.</p>
-    <p><strong>Bypass links.</strong> A link for one member that skips the checks you pick, for 1 to 168 hours. Every other check still runs, even on a server in Button mode. The link is shown to you once, and it's never posted in a log or a channel. If you choose to notify in a channel, the member is pinged in the verification channel, and presses Verify to get it.</p>
-    <p><strong>Help desk.</strong> Adds a help button that opens a private thread with your support role. The first message is pinned and lists the member's failed attempts. Threads archive after a week of quiet, reopen when the member presses the button again, and close when the member leaves.</p>
-    <p><strong>Honeypot.</strong> Anything posted in the trap channel is deleted, and the account is logged, timed out, kicked, softbanned or banned. Posts in threads under the channel are caught too. Roles you whitelist are ignored, and webhooks are only logged.</p>
-    <p><strong>Appeals.</strong> Members who were stopped can explain themselves, and staff decide with buttons in Discord or on the dashboard. Approving an appeal from a banned account lifts the ban, so it takes Ban Members.</p>
+    <p><strong>Auto Kick.</strong> Removes members who don't verify within a time you set, from 5 minutes to 7 days. They get one reminder halfway through, and a member removed this way can rejoin and try again.</p>
+    <p><strong>Bypass links.</strong> A link for one member that skips the checks you pick, for 1 to 168 hours. Every other check still runs, even on a server in Button mode. The link is shown to you once, and it's never posted in a log or a channel. If you choose to notify in a channel, the member is pinged in the verification channel, and presses Verify to get it. With Auto Kick on, the member's time to verify starts when the link ends.</p>
+    <p><strong>Help desk.</strong> Adds a help button that opens a private thread with your support role. The first message is pinned, lists the member's failed attempts, by time alone if the server hides reasons, and has Verify and Bypass buttons for staff. Threads archive after a week of quiet, reopen when the member presses the button again, and close when the member leaves.</p>
+    <p><strong>Honeypot.</strong> Anything posted in the trap channel is deleted, and the account is logged, timed out, kicked, softbanned or banned. A member is told by DM first and can appeal. Posts in threads under the channel are caught too. Roles you whitelist are ignored. Posts by bots and webhooks are only deleted and logged, because any member can make another bot post there.</p>
+    <p><strong>Appeals.</strong> Members who were stopped can explain themselves for 7 days after a failed attempt, once per failure, and a try past a used-up limit counts as a new failure. Staff decide with buttons in Discord or on the dashboard. The decision goes by DM and shows on the appeal page, because Discord won't deliver a DM to someone who left the server. Approving an appeal from a banned account lifts the ban, so it takes Ban Members. Approving a honeypot appeal also ends a timeout.</p>
     <p><strong>Raid mode.</strong> When joins spike, the rules tighten for a while and staff are alerted. A raid only ever makes a rule stricter. You can also start it with <code>/raid</code>.</p>
 
     <h2>Messages</h2>
     <p>The Messages page edits the verification message, the first message of each help thread, and the honeypot warning, with a live preview. The verification message is posted again when you change it, change the channel, or turn the help desk on or off. A changed message names the staff member who wrote it, with a link to report it.</p>
 
-    <p>The same page sets AltWarden's profile in your server: one of eight pictures, a name, a bio, and a name style with any of 12 fonts and 7 effects. Discord doesn't publish the name style fields in its reference, so a change on Discord's side could stop them working. If Discord refuses a style, the page says so and the rest still saves.</p>
+    <p>The same page sets AltWarden's profile in your server: one of eight pictures, a name, a bio, and a name style with any of 12 fonts and 7 effects. If Discord refuses a style, the page says so and the rest still saves.</p>
 
     <h2>Who can do what</h2>
-    <p>The Access page sets who can open each dashboard page and run each command, using Discord's own order. A member override decides first, then roles, then Everyone, then the required permissions. The server owner and Administrators always pass, so nobody gets locked out. Commands can also be limited to chosen channels.</p>
-    <p>The page also shows Discord's own command permissions, the same ones as Server Settings, Integrations. These decide who sees a command in Discord's list. Out of the box, Discord lists each staff command only for people with the permission it needs. To let a role without that permission use a command, allow it in both places. Discord only takes changes to them from a person's account, so saving asks you to approve the change on Discord once. AltWarden makes the change and ends that approval straight away, and keeps no token.</p>
+    <p>The Access page sets who can open each dashboard page and run each command, using Discord's own order. A member override decides first, then roles, then Everyone, then the required permissions. The server owner and Administrators always pass, so nobody gets locked out. Commands can also be limited to chosen channels. Anyone else can change a rule only if they pass it now and hold every permission in its default.</p>
+    <p>The page also shows Discord's own command permissions, the same ones as Server Settings, Integrations. These decide who sees a command in Discord's list. Out of the box, Discord lists each staff command only for people with the permission it needs. To let a role without that permission use a command, allow it in Discord's list. That one allow is enough for slash commands and right-click commands while the command's rule on the Access page is still its default: Discord shows the command, and AltWarden lets it run, because setting an allow there takes Manage Server and Manage Roles. A rule you change there is final, so a block or a raised permission holds against anyone who adds themselves on Discord's side. A deny on Discord's side also refuses the help thread's staff buttons that stand in for that command. An allow only on AltWarden's rule also lets someone run the command, but Discord keeps hiding it from them, so the page offers to load it into Discord's list. Discord only takes changes to them from a person's account, so saving asks you to approve the change on Discord once. AltWarden makes the change and ends that approval straight away, and keeps no token.</p>
 
     <h2>Commands</h2>
     <table>
-      <tr><th>Command</th><th>What it does</th></tr>
-      <tr><td><code>/setup</code></td><td>Sets the verified role and channel, and posts the message.</td></tr>
-      <tr><td><code>/settings</code></td><td>Shows how verification is set up.</td></tr>
-      <tr><td><code>/post-message</code></td><td>Posts the verification or honeypot message again.</td></tr>
-      <tr><td><code>/health</code></td><td>Finds what would stop members from verifying.</td></tr>
-      <tr><td><code>/verify-user</code></td><td>Verifies a member yourself.</td></tr>
-      <tr><td><code>/reset-user</code></td><td>Clears a member's records so they verify again.</td></tr>
-      <tr><td><code>/create-bypass</code></td><td>Makes a link that skips the checks you choose, for one member.</td></tr>
-      <tr><td><code>/lookup</code></td><td>Shows a member's history and links.</td></tr>
-      <tr><td><code>/trust-accounts</code></td><td>Marks two accounts as different people.</td></tr>
-      <tr><td><code>/import-members</code></td><td>Marks everyone with a role as verified.</td></tr>
-      <tr><td><code>/raid</code></td><td>Turns raid mode on or off.</td></tr>
-      <tr><td><code>/uninstall</code></td><td>Deletes all settings and records for the server.</td></tr>
-      <tr><td><code>/my-data</code></td><td>Links anyone to their own data.</td></tr>
-      <tr><td><code>/help</code>, <code>/ping</code></td><td>Links, and a speed check.</td></tr>
+      <tr><th>Command</th><th>What it does</th><th>Who can run it by default</th></tr>
+      <tr><td><code>/setup</code></td><td>Sets the verified role and channel, and posts the message. Works only on a server not set up yet.</td><td>Manage Server</td></tr>
+      <tr><td><code>/settings</code></td><td>Posts publicly which checks are on, and never what each one does.</td><td>Manage Server</td></tr>
+      <tr><td><code>/post-message</code></td><td>Posts the verification or honeypot message again.</td><td>Manage Server</td></tr>
+      <tr><td><code>/health</code></td><td>Finds what would stop members from verifying, and notes what's worth a look, such as channels everyone can read.</td><td>Manage Server</td></tr>
+      <tr><td><code>/verify-user</code></td><td>Verifies a member yourself.</td><td>Manage Roles</td></tr>
+      <tr><td><code>/reset-user</code></td><td>Clears a member's records so they verify again. A banned account keeps its hashes, a connection hash ends on its own date, and the first date it verified stays.</td><td>Manage Roles</td></tr>
+      <tr><td><code>/create-bypass</code></td><td>Makes a link that skips the checks you choose, for one member.</td><td>Manage Roles</td></tr>
+      <tr><td><code>/lookup</code></td><td>Shows a member's history and links.</td><td>Manage Roles</td></tr>
+      <tr><td><code>/trust-accounts</code></td><td>Marks two accounts as different people.</td><td>Manage Roles</td></tr>
+      <tr><td><code>/import-members</code></td><td>Marks everyone with a role as verified.</td><td>Manage Server and Manage Roles</td></tr>
+      <tr><td><code>/raid</code></td><td>Turns raid mode on or off.</td><td>Manage Server and Kick Members</td></tr>
+      <tr><td><code>/uninstall</code></td><td>Deletes all settings and records for the server. It tells the staff log first, and hands you your rules as a code you can paste into a new setup.</td><td>Administrator</td></tr>
+      <tr><td><code>/my-data</code></td><td>Links anyone to their own data.</td><td>Anyone</td></tr>
+      <tr><td><code>/help</code>, <code>/ping</code></td><td>Links, and a speed check.</td><td>Anyone</td></tr>
     </table>
-    <p>Right-click a member and open Apps for Verify, Reset, Create Bypass and Lookup. The Access page on the dashboard controls who can use each one, and where.</p>
+    <p>Right-click a member and open Apps for Verify, Reset, Create Bypass and Lookup. Each follows the rule of the slash command it stands in for. The Access page on the dashboard controls who can use each one, and where.</p>
+    <p>Acting on a member has its own limits, whoever is asking. Unless you're an Administrator or the owner, you can't act on someone whose highest role is at or above yours, you can't give a verified role that sits at or above yours, and resetting or trusting a banned account takes Ban Members.</p>
 
     <h2>Integrations</h2>
     <p>The Integrations page sends signed webhooks for <code>member.verified</code>, <code>member.failed</code>, <code>appeal.opened</code>, <code>appeal.decided</code>, <code>raid.started</code> and <code>raid.ended</code>. Check the signature by computing HMAC-SHA256 of <code>t.body</code> with your secret.</p>
@@ -156,7 +167,7 @@ Authorization: Bearer aw_...
       <tr><th>What you see</th><th>What to do</th></tr>
       <tr><td>Members don't get the role</td><td>In Server Settings, Roles, drag AltWarden's role above the role it gives, and check it has Manage Roles. If you recreated the role, pick the new one on the Rules page.</td></tr>
       <tr><td>A member says the link doesn't work</td><td>Links last an hour, or your Auto Kick time, and stop working once used or replaced. The member can press Verify in the channel for a new one.</td></tr>
-      <tr><td>Your server isn't on the dashboard</td><td>You need access to at least one page, which by default means Manage Server. Sign out and back in if your roles changed.</td></tr>
+      <tr><td>Your server isn't on the dashboard</td><td>You need access to at least one page, which by default means Manage Server, or Manage Roles for the Appeals page. AltWarden also has to be in that server. Sign out and back in if your roles changed.</td></tr>
       <tr><td>The verification message is gone</td><td>Run <code>/post-message</code>, or press Post it again on the Messages page.</td></tr>
       <tr><td>New members no longer see Discord's rules screen</td><td>Discord skips that screen for anyone given a role, so the Unverified role turns it off. Leave that role off if you rely on the screen.</td></tr>
       <tr><td>A real member keeps failing one check</td><td>Send a bypass link that skips only that check, or verify them yourself with <code>/verify-user</code>.</td></tr>
@@ -164,7 +175,7 @@ Authorization: Bearer aw_...
     </table>
     <p>For anything else, run <code>/health</code> first, then open an issue on <a href="https://github.com/hifihedgehog/AltWarden/issues">GitHub</a>.</p>
 
-    <h2>Host it yourself</h2>
+    <h2 id="host-it-yourself">Host it yourself</h2>
     <p>AltWarden is one Python process with a SQLite file. See the <a href="https://github.com/hifihedgehog/AltWarden#host-it-yourself">README</a>.</p>
   </main>
   <footer class="site-footer"><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/security">Security</a></footer>

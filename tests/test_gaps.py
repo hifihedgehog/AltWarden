@@ -105,19 +105,19 @@ class HoneypotDetails(Base):
     async def test_flood_gets_one_action_but_every_post_goes(self):
         await self.turn_on()
         for index in range(5):
-            await self.service.honeypot_hit(GUILD, OLD_USER, "x", LOG_CHANNEL, str(index), role_ids=())
+            await self.service.honeypot_hit(GUILD, OLD_USER, LOG_CHANNEL, str(index), role_ids=())
         self.assertEqual(len(self.port.did("kick")), 1)
         self.assertEqual(len(self.port.did("delete_message")), 5)
 
     async def test_threads_under_the_trap_count(self):
         await self.turn_on()
-        await self.service.honeypot_hit(GUILD, OLD_USER, "x", "970000000000000050", "9", role_ids=(), parent_id=LOG_CHANNEL)
+        await self.service.honeypot_hit(GUILD, OLD_USER, "970000000000000050", "9", role_ids=(), parent_id=LOG_CHANNEL)
         self.assertEqual(self.port.did("delete_message")[0][1], "970000000000000050")
         self.assertTrue(self.port.did("kick"))
 
     async def test_other_channels_are_ignored(self):
         await self.turn_on()
-        await self.service.honeypot_hit(GUILD, OLD_USER, "x", CHANNEL, "9", role_ids=())
+        await self.service.honeypot_hit(GUILD, OLD_USER, CHANNEL, "9", role_ids=())
         self.assertFalse(self.port.did("delete_message"))
 
 
@@ -150,7 +150,7 @@ class Pages(Base):
         self.assertEqual(again.status, 304, "an unchanged file isn't sent twice")
 
     async def test_versioned_libraries_can_stay_cached(self):
-        response = await self.client.get("/static/vendor/botd-2.0.0.esm.js")
+        response = await self.client.get("/static/vendor/b-2.0.0.esm.js")
         self.assertIn("immutable", response.headers["Cache-Control"])
 
     async def test_nothing_offers_to_add_the_bot(self):

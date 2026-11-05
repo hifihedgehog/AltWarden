@@ -8,17 +8,29 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import re
+import unicodedata
 import zlib
+from functools import cache
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .catalog import (ACTIONS, BAN, BY_ID, CHECK_IDS, DEFAULT_PRESET, DENY, HONEYPOT_ACTIONS, KICK, LOG_MODULES,
                       MODES, PRESETS, WATCH, WEB)
 
 SCHEMA_VERSION = 1
 CONFIDENCE_LEVELS = ("possible", "likely", "confirmed")
+MAIN_ACTIONS = (WATCH, KICK, BAN)
+MIN_RESET_MINUTES = 5
 MAX_EXPORT_BYTES = 64 * 1024
+REVISION_SECTIONS = {"rules": None, "access": ("permissions",), "look": ("messages", "appearance")}
+OTHER_SECTIONS = ("permissions", "messages", "appearance")
+COUNTRIES = Path(__file__).resolve().parent / "web" / "static" / "countries.json"
+IMPORTED_SWITCHES = {"logs": ("enabled",), "alerts": ("enabled",),
+                     "help_desk": ("enabled", "require_attempt", "redirect", "auto_close", "member_close")}
 
 DEFAULT_MESSAGES = {
     "verification": {
@@ -59,6 +71,8 @@ DEFAULT_MESSAGES = {
         "author": None,
     },
 }
+# Emoji that Unicode files outside "Symbol, other": double and interrobang marks, info, arrows, squares, wavy dash, part mark.
+EMOJI_OUTSIDE_SYMBOLS = frozenset("\u203c\u2049\u2139\u2194\u25fb\u25fc\u25fd\u25fe\u2934\u2935\u3030\u303d")
 BUTTON_STYLES = ("primary", "secondary", "success", "danger")
 AVATAR_COLORS = ("teal", "blue", "red", "orange", "yellow", "green", "purple", "pink")
 AVATAR_HEX = {"teal": 0x29CDB9, "blue": 0x599DF8, "red": 0xF66B6B, "orange": 0xF98C37, "yellow": 0xF5C513, "green": 0x42D578,
@@ -97,9 +111,9 @@ COMMAND_DEFAULTS = {
     "settings": ["manage_guild"],
     "post-message": ["manage_guild"],
     "health": ["manage_guild"],
-    "uninstall": ["manage_guild"],
+    "uninstall": ["administrator"],
     "import-members": ["manage_guild", "manage_roles"],
-    "raid": ["manage_guild"],
+    "raid": ["manage_guild", "kick_members"],
 }
 PERMISSION_NAMES = ("administrator", "manage_guild", "manage_roles", "manage_channels", "manage_messages",
                     "manage_nicknames", "moderate_members", "kick_members", "ban_members", "view_audit_log")
@@ -108,7 +122,7 @@ PERMISSION_NAMES = ("administrator", "manage_guild", "manage_roles", "manage_cha
 def _snowflake(value: Any) -> str | None:
     """IDs stay strings in JSON, because a 64-bit integer doesn't survive JavaScript."""
     text = str(value).strip() if value is not None else ""
-    return text if re.fullmatch(r"\d{15,21}", text) else None
+    return text if re.fullmatch(r"[0-9]{15,21}", text) else None
 
 
 def _int(value: Any, low: int, high: int, fallback: int) -> int:
@@ -132,20 +146,50 @@ def _text(value: Any, limit: int, fallback: str = "") -> str:
 
 
 def _https_url(value: Any) -> str:
-    text = _text(value, 2000)
-    return text if text.startswith("https://") else ""
+    """An https address with a host and no spaces or control characters. Cutting a longer one would change where it points."""
+    text = value.strip() if isinstance(value, str) else ""
+    if not text.startswith("https://") or len(text) > 2000 or any(character.isspace() or not character.isprintable() for character in text):
+        return ""
+    try:
+        return text if urlsplit(text).hostname else ""
+    except ValueError:
+        return ""
+
+
+def _emoji_base(character: str) -> bool:
+    """Whether a character can start an emoji: a symbol past Latin-1, the copyright and registered signs, or one of the few filed elsewhere."""
+    return character in EMOJI_OUTSIDE_SYMBOLS or (unicodedata.category(character) == "So" and (ord(character) > 0xFF or character in "\u00a9\u00ae"))
+
+
+def _single_emoji(text: str) -> bool:
+    """One emoji as a person sees it: a flag, a keycap, or symbols joined by ZWJ with skin tones and VS16.
+
+    Checks the shape from Unicode's categories, with no emoji table to keep current, so a plain symbol
+    such as a check mark passes too.
+    """
+    if re.fullmatch("[\U0001F1E6-\U0001F1FF]{2}", text) or re.fullmatch("[0-9#*]\uFE0F?\u20E3", text):
+        return True
+    if re.fullmatch("\U0001F3F4[\U000E0061-\U000E007A\U000E0030-\U000E0039]+\U000E007F", text):
+        return True  # the flags of England, Scotland and Wales
+    parts = text.split("\u200d")
+    return all(_emoji_part(part) for part in parts)
+
+
+def _emoji_part(part: str) -> bool:
+    found = re.fullmatch("(.)[\U0001F3FB-\U0001F3FF]?\uFE0F?", part, re.DOTALL)
+    return bool(found) and _emoji_base(found.group(1))
 
 
 def _emoji(value: Any) -> str:
-    """A custom emoji in Discord's <:name:id> form, or a short string with no plain letters in it.
+    """A custom emoji in Discord's <:name:id> form, or one Unicode emoji.
 
     Anything else would make Discord refuse the whole message, which would take the Verify button
     down with it.
     """
     text = _text(value, 64).strip()
-    if re.fullmatch(r"<a?:[A-Za-z0-9_]{2,32}:\d{15,21}>", text):
+    if re.fullmatch(r"<a?:[A-Za-z0-9_]{2,32}:[0-9]{15,21}>", text):
         return text
-    return text if len(text) <= 16 and not re.search(r"[A-Za-z0-9<>:\s]", text) else ""
+    return text if text and _single_emoji(text) else ""
 
 
 def _snowflake_list(value: Any, limit: int = 100) -> list[str]:
@@ -210,7 +254,7 @@ def defaults() -> dict:
             "auto_kick": {"enabled": False, "minutes": 10},
             "cooldown": {"enabled": False, "seconds": 60},
             "remember_rejoin": False,
-            "fail_open": True,
+            "fail_open": False,
             "show_reason": True,
             "external_vpn_lookup": False,
             "direct_signin": False,
@@ -235,8 +279,8 @@ def defaults() -> dict:
 
 
 def apply_preset(settings: dict, preset: str) -> dict:
-    """Set every check a preset covers and leave everything else alone."""
-    table = PRESETS.get(preset)
+    """Set every check a preset covers, with all its options, and the core settings it names. Everything else stays."""
+    table = PRESETS.get(preset) if isinstance(preset, str) else None
     if table is None:
         raise ValueError(f"Unknown preset {preset!r}")
     result = copy.deepcopy(settings)
@@ -244,16 +288,22 @@ def apply_preset(settings: dict, preset: str) -> dict:
         check = result["checks"][check_id]
         check["enabled"] = enabled
         check["action"] = action
-        check.update(extras)
+        check.update(copy.deepcopy(extras))
+    result["core"].update(copy.deepcopy(table["core"]))
     result["core"]["auto_kick"]["enabled"] = table["auto_kick"]
+    if "auto_kick_minutes" in table:
+        result["core"]["auto_kick"]["minutes"] = table["auto_kick_minutes"]
     result["preset"] = preset
     return result
 
 
 def detect_preset(settings: dict) -> str:
     """Name the preset this document matches, or "custom"."""
+    core = settings["core"]
     for name, table in PRESETS.items():
-        if settings["core"]["auto_kick"]["enabled"] != table["auto_kick"]:
+        if core["auto_kick"]["enabled"] != table["auto_kick"] or core["auto_kick"]["minutes"] != table.get("auto_kick_minutes", core["auto_kick"]["minutes"]):
+            continue
+        if any(core[key] != value for key, value in table["core"].items()):
             continue
         if all(_matches(settings["checks"][check_id], entry) for check_id, entry in table["checks"].items()):
             return name
@@ -262,11 +312,16 @@ def detect_preset(settings: dict) -> str:
 
 def _matches(check: dict, entry: tuple) -> bool:
     enabled, action, extras = entry
-    if check["enabled"] != enabled:
-        return False
-    if enabled and check["action"] != action:
-        return False
-    return not enabled or all(check.get(key) == value for key, value in extras.items())
+    return check["enabled"] == enabled and check["action"] == action and all(check.get(key) == value for key, value in extras.items())
+
+
+@cache
+def _geogate_keys() -> frozenset:
+    """What a country rule can name: a country code, a region or a continent from the table the page offers."""
+    keys = set()
+    for row in json.loads(COUNTRIES.read_text(encoding="utf-8")):
+        keys.update((row["code"], f"region:{row['region']}", f"continent:{row['continent']}"))
+    return frozenset(keys)
 
 
 def _normalize_check(check_id: str, raw: dict, base: dict) -> dict:
@@ -279,14 +334,17 @@ def _normalize_check(check_id: str, raw: dict, base: dict) -> dict:
         methods = raw.get("methods") if isinstance(raw.get("methods"), dict) else {}
         result["methods"] = {key: _bool(methods.get(key), value) for key, value in base["methods"].items()}
         result["min_confidence"] = _choice(raw.get("min_confidence"), CONFIDENCE_LEVELS, base["min_confidence"])
-        for key in ("main_action", "alt_action", "banned_alt_action"):
+        for key in ("alt_action", "banned_alt_action"):
             result[key] = _choice(raw.get(key), ACTIONS, base[key])
+        # Deny does nothing to an account that already got in, so a stored one falls back to the default Watch.
+        result["main_action"] = _choice(raw.get("main_action"), MAIN_ACTIONS, base["main_action"])
         # The check's own action is what the summary shows, so keep it equal to the alt action.
         result["action"] = result["alt_action"]
     elif check_id == "max_attempts":
         result["attempts"] = _int(raw.get("attempts"), 1, 100, base["attempts"])
         result["role"] = _snowflake(raw.get("role"))
-        result["reset_minutes"] = _int(raw.get("reset_minutes"), 0, 43200, base["reset_minutes"])
+        reset = _int(raw.get("reset_minutes"), 0, 43200, base["reset_minutes"])
+        result["reset_minutes"] = reset and max(reset, MIN_RESET_MINUTES)  # 0 means attempts never come back
     elif check_id == "tampering":
         result["anomaly_score"] = _int(raw.get("anomaly_score"), 1, 100, base["anomaly_score"])
     elif check_id == "threat":
@@ -297,7 +355,7 @@ def _normalize_check(check_id: str, raw: dict, base: dict) -> dict:
         countries = raw.get("countries") if isinstance(raw.get("countries"), list) else []
         result["countries"] = sorted({c.upper() for c in countries if isinstance(c, str) and re.fullmatch(r"[A-Za-z]{2}", c)})
         overrides = raw.get("overrides") if isinstance(raw.get("overrides"), dict) else {}
-        result["overrides"] = {str(key)[:64]: value for key, value in list(overrides.items())[:320] if value in ACTIONS}
+        result["overrides"] = {key: value for key, value in list(overrides.items())[:320] if key in _geogate_keys() and value in ACTIONS}
     return result
 
 
@@ -316,7 +374,7 @@ def _normalize_message(name: str, raw: Any) -> dict:
     }
     if name == "verification":
         for prefix in ("verify", "help"):
-            result[f"{prefix}_label"] = _text(raw.get(f"{prefix}_label"), 80, base[f"{prefix}_label"]) or base[f"{prefix}_label"]
+            result[f"{prefix}_label"] = _text(raw.get(f"{prefix}_label"), 80, base[f"{prefix}_label"]).strip() or base[f"{prefix}_label"]
             result[f"{prefix}_emoji"] = _emoji(raw.get(f"{prefix}_emoji"))
             result[f"{prefix}_style"] = _choice(raw.get(f"{prefix}_style"), BUTTON_STYLES, base[f"{prefix}_style"])
     return result
@@ -339,7 +397,8 @@ def _normalize_rule(raw: Any, default_required: list[str]) -> dict:
         target = _snowflake(entry.get("id"))
         if kind is None or (kind != "everyone" and target is None):
             continue
-        overrides.append({"type": kind, "id": target, "allow": _bool(entry.get("allow"), True)})
+        # Only a plain true grants anything, so a damaged override can't open a page.
+        overrides.append({"type": kind, "id": target, "allow": _bool(entry.get("allow"), False)})
     return {"required": required, "overrides": overrides}
 
 
@@ -351,6 +410,13 @@ def page_rule(settings: dict, page: str, level: str) -> dict:
 
 def command_rule(settings: dict, name: str) -> dict:
     return _normalize_rule(settings["permissions"]["commands"].get(name), COMMAND_DEFAULTS.get(name, ["manage_guild"]))
+
+
+def command_rule_untouched(settings: dict, name: str) -> bool:
+    """Whether a command's rule still says what it says out of the box. The order of its permissions means nothing."""
+    rule = command_rule(settings, name)
+    default = _normalize_rule(None, COMMAND_DEFAULTS.get(name, ["manage_guild"]))
+    return set(rule["required"]) == set(default["required"]) and rule["overrides"] == default["overrides"]
 
 
 def normalize(raw: Any) -> dict:
@@ -403,7 +469,7 @@ def normalize(raw: Any) -> dict:
     result["honeypot"] = {
         "enabled": _bool(pot.get("enabled"), False),
         "channel": _snowflake(pot.get("channel")),
-        "action": _choice(pot.get("action"), HONEYPOT_ACTIONS, "log"),
+        "action": _choice(pot.get("action"), HONEYPOT_ACTIONS, base["honeypot"]["action"]),
         "timeout_minutes": _int(pot.get("timeout_minutes"), 1, 40320, 60),
         "whitelist_roles": _snowflake_list(pot.get("whitelist_roles")),
     }
@@ -450,6 +516,24 @@ def normalize(raw: Any) -> dict:
 
     result["preset"] = detect_preset(result)
     return result
+
+
+class Conflict(Exception):
+    """Someone saved this part of the settings after the person saving now loaded it."""
+
+
+def revision(document: dict, section: str) -> str:
+    """A fingerprint of one part of a document, so a save can tell whether it still has the latest.
+
+    The pages edit separate parts: `rules` is everything except permissions, messages and appearance,
+    `access` is permissions, and `look` is messages and appearance. A save on one page doesn't conflict
+    with a save on another.
+    """
+    if section not in REVISION_SECTIONS:
+        raise ValueError(f"Unknown settings section {section!r}")
+    names = REVISION_SECTIONS[section]
+    part = {key: value for key, value in document.items() if (key not in OTHER_SECTIONS if names is None else key in names)}
+    return hashlib.sha256(json.dumps(part, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def problem_items(settings: dict) -> list[dict]:
@@ -546,12 +630,20 @@ def import_code(current: dict, code: str) -> dict:
         if decompressor.unconsumed_tail:
             raise ValueError("too large")
         incoming = json.loads(payload)
+        if not isinstance(incoming, dict):
+            raise ValueError("not a settings document")
     except Exception as exc:
         raise ValueError("That settings code is damaged or too large.") from exc
-    merged = normalize({**current, **{key: incoming[key] for key in ("checks", "honeypot", "raid", "privacy") if key in incoming}})
+    sections = {key: incoming[key] for key in ("checks", "honeypot", "raid", "privacy", "appeals") if isinstance(incoming.get(key), dict)}
+    merged = normalize({**current, **sections})
     if isinstance(incoming.get("core"), dict):
         kept = {key: value for key, value in incoming["core"].items()
                 if key not in ("verified_role", "channel", "unverified_role", "logs", "alerts", "help_desk")}
+        # These three carry switches worth sharing beside channels and roles that aren't.
+        for name, options in IMPORTED_SWITCHES.items():
+            given = incoming["core"].get(name)
+            if isinstance(given, dict):
+                kept[name] = {**merged["core"][name], **{key: given[key] for key in options if key in given}}
         merged = normalize({**merged, "core": {**merged["core"], **kept}})
     for key, value in (("channel", current["honeypot"]["channel"]), ("whitelist_roles", current["honeypot"]["whitelist_roles"])):
         merged["honeypot"][key] = value
@@ -575,6 +667,6 @@ def diff(before: dict, after: dict, prefix: str = "") -> list[dict]:
     return changes
 
 
-__all__ = ["ACTIONS", "BAN", "DENY", "KICK", "WATCH", "apply_preset", "command_rule", "defaults", "detect_preset",
+__all__ = ["ACTIONS", "BAN", "Conflict", "DENY", "KICK", "WATCH", "apply_preset", "command_rule", "defaults", "detect_preset",
            "diff", "export_code", "given_roles", "import_code", "message_problems", "normalize", "page_rule", "paused_checks",
-           "problem_items", "problems"]
+           "problem_items", "problems", "revision"]

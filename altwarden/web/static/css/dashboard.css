@@ -33,7 +33,7 @@ body { background: var(--bg); }
 .server-button img, .server-icon { width: 28px; height: 28px; border-radius: 8px; flex: none; background: var(--bg-hover); object-fit: cover; }
 .server-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
-.nav a {
+.nav a, .nav .locked {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text-soft); font-size: .93rem;
 }
 .nav a:hover { background: var(--bg-hover); text-decoration: none; }
@@ -42,8 +42,12 @@ body { background: var(--bg); }
 .nav a .dot { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
 .nav a .dot.amber { display: none; background: var(--amber); }
 .nav a.unsaved .dot.amber { display: inline-block; }
-.nav a.locked { opacity: .45; pointer-events: none; }
-.nav a.locked::after { content: "\1F512\FE0E"; margin-left: auto; font-size: .75rem; }
+.nav .locked { opacity: .55; cursor: not-allowed; }
+.nav .locked .lock { margin-left: auto; flex: none; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.side-close { display: none; align-self: flex-end; }
+.scrim { display: none; }
+[aria-busy=true] { opacity: .7; cursor: progress; }
 .side-links { margin-top: auto; display: flex; gap: 12px; padding: 0 10px; font-size: .85rem; }
 .side-links a { color: var(--text-soft); }
 .side-foot { display: flex; align-items: center; gap: 8px; padding: 8px; font-size: .88rem; color: var(--text-soft); }
@@ -102,12 +106,14 @@ body { background: var(--bg); }
 .log-group[open] summary { margin-bottom: 10px; }
 .check-filter { position: relative; }
 .check-filter summary { list-style: none; cursor: pointer; }
+.check-filter .wide-note { flex-basis: 100%; margin: 4px 0 0; font-size: .8rem; }
 .check-filter .panel { position: absolute; z-index: 6; margin-top: 6px; width: min(560px, 80vw); box-shadow: var(--shadow); }
 .rule-body { padding: 4px 14px 14px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: .86rem; color: var(--text-soft); }
 .field.wide { grid-column: 1 / -1; }
 .field .segments { align-self: flex-start; }
 .field .help { color: var(--text-faint); font-size: .8rem; }
+.help.error { color: var(--red); font-size: .84rem; }
 input:not([type=checkbox], [type=radio], [type=color]), select, textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-sunken); color: var(--text); font: .92rem var(--font);
 }
@@ -141,7 +147,8 @@ input:disabled, select:disabled, textarea:disabled { opacity: .6; }
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 12px; padding: 10px 14px;
   background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.toast { position: fixed; right: 18px; bottom: 18px; z-index: 40; max-width: 360px; padding: 10px 14px; border-radius: 10px; background: var(--bg-raised); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.toasts { position: fixed; right: 18px; bottom: 18px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-width: min(360px, calc(100vw - 36px)); }
+.toast { padding: 10px 14px; border-radius: 10px; background: var(--bg-raised); border: 1px solid var(--line); box-shadow: var(--shadow); }
 .toast.error { border-color: var(--red); }
 .notice { padding: 10px 12px; border-radius: 10px; background: var(--bg-sunken); border-left: 3px solid var(--accent); font-size: .9rem; margin-bottom: 12px; }
 .notice.warn { border-left-color: var(--amber); }
@@ -171,6 +178,9 @@ table.list tr.click:hover { background: var(--bg-hover); }
 .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .who img { width: 30px; height: 30px; border-radius: 50%; flex: none; }
 .who small { display: block; color: var(--text-faint); font-family: var(--mono); }
+.copy-id { display: block; padding: 0; border: 0; background: none; color: var(--text-faint); font: .8rem var(--mono); cursor: pointer; }
+.copy-id:hover { color: var(--text); }
+.change-list { max-height: 50vh; overflow-y: auto; margin: 0; padding-left: 18px; font-size: .88rem; overflow-wrap: anywhere; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .toolbar input:not([type=checkbox]), .toolbar select { width: auto; flex: 0 1 240px; }
 .pager { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 10px; color: var(--text-soft); font-size: .88rem; }
@@ -281,6 +291,7 @@ table.list tr.click:hover { background: var(--bg-hover); }
 .land { fill: var(--line); stroke: var(--bg-sunken); stroke-width: .4; cursor: pointer; }
 .land:hover { fill: var(--text-faint); }
 .land.picked { fill: var(--accent-strong); }
+.land.allowed { fill: var(--green); }
 .land.watch { fill: var(--amber); }
 .land.kick { fill: var(--series-2); }
 .land.ban { fill: var(--red); }
@@ -294,8 +305,11 @@ table.list tr.click:hover { background: var(--bg-hover); }
 @media (max-width: 900px) {
   .profile-preview { grid-template-columns: 1fr; }
   .shell { grid-template-columns: 1fr; }
-  .side { position: fixed; z-index: 25; width: 260px; left: -270px; transition: left .15s; }
-  .side.open { left: 0; }
+  /* Hidden as well as off to the side, so Tab can't walk into links nobody can see. */
+  .side { position: fixed; z-index: 25; width: 260px; left: -270px; visibility: hidden; transition: left .15s, visibility 0s .15s; }
+  .side.open { left: 0; visibility: visible; transition: left .15s, visibility 0s; }
+  .side.open + .scrim { display: block; position: fixed; inset: 0; z-index: 24; background: rgb(0 0 0 / 45%); }
+  .side-close { display: inline-flex; }
   .menu-toggle { display: inline-flex; }
   .view { padding: 16px; }
   .topbar { padding: 10px 16px; }

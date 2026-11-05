@@ -2,43 +2,44 @@
 import { loadLanguage, t } from "/static/js/i18n.js";
 
 window.pageStarted = true;  // tells loading-guard.js this script loaded
-const STAFF = "If that doesn't work, press Appeal, or ask the server's staff. They can verify you themselves or send you a link that skips this check.";
+const STAFF = "If that doesn't work, press Appeal to staff if the page shows it, or ask the server's staff. They can verify you themselves or send you a link that skips this check.";
 
 const PAGES = {
+  "how-to-verify": ["How to verify", "This server uses AltWarden to keep out bots, raiders and alt accounts. Verifying takes less than a minute.", ["Open the link AltWarden sent you by DM. No DM? Press Verify in the server's verification channel to get one.", "Press Continue with Discord. Some servers skip this page and go straight to Discord.", "Keep the tab open for a few seconds until you see the result, then go back to Discord.", "Some servers check you as you join, with nothing to press. You get a DM if something went wrong.", "Use your own device and a normal browser window, with any VPN or iCloud Private Relay turned off.", "Discord's sign-in page is always on discord.com, so check the address bar before you type anything. AltWarden never asks for your password or two-factor codes."]],
   verification: ["You weren't verified", "This server's rules stopped this attempt, and it chose not to show which one.", ["Try again in a normal browser on your home connection.", STAFF]],
   "account-age": ["Your account is too new", "This server only accepts accounts older than a set age. Brand new accounts are the easiest way to dodge a ban.", ["Try again once your account is old enough.", STAFF]],
   avatar: ["You need a profile picture", "Throwaway accounts rarely set one, so this server requires it.", ["In Discord, open User Settings, then Profiles, and upload a picture.", "Press Verify in the server to try again."]],
   mfa: ["You need two-factor login", "Accounts with two-factor login are much harder to steal or mass-produce.", ["In Discord, open User Settings, then Account, and enable an authenticator app.", "Save your backup codes somewhere safe, and never share them with anyone.", "Press Verify in the server to try again."]],
   "no-email": ["Your account has no verified email", "This server checks that accounts use a real email address, and Discord says yours isn't verified.", ["In Discord, open User Settings, then Account, and add or confirm your email.", "Press Verify in the server to try again."]],
   "disposable-email": ["Your account uses a throwaway email", "Temporary inboxes make it easy to create accounts in bulk, so this server turns them away.", ["In Discord, change your email to a regular provider and confirm it.", "Press Verify in the server to try again."]],
-  "alt-account": ["This account looks linked to another", "Something about this browser or connection matches another account in this server. That can happen to people who share a home or a computer.", ["If it's a mistake, press Appeal and explain. Saying that you share a home or computer helps.", "Staff decide, and they can mark the two accounts as different people."]],
+  "alt-account": ["This account looks linked to another", "Something about this browser or connection matches another account in this server. That can happen to people who share a home or a computer.", ["If it's a mistake, press Appeal to staff if the page shows it, and explain. Saying that you share a home or computer helps.", "Staff decide, and they can mark the two accounts as different people."]],
   "max-attempts": ["You're out of attempts", "This server limits how many times someone can fail.", ["If attempts come back after a while, the message said when. Fix what stopped you, then try again.", STAFF]],
   cooldown: ["Please wait", "This server makes members wait after a failed attempt. Being asked to wait doesn't count against you.", ["Use the time to fix what stopped you, then try again."]],
-  vpn: ["Your connection looks like a VPN", "VPNs and proxies make it easy to dodge bans, so this server limits them. Data centers, Tor and iCloud Private Relay count too.", ["Turn off your VPN or proxy while you verify. You can turn it back on afterwards.", "On an Apple device, turn off iCloud Private Relay for now.", "Use your home connection if you can. School and work networks can look like a VPN.", STAFF]],
+  vpn: ["Your connection looks like a VPN", "VPNs and proxies make it easy to dodge bans, so this server limits them. Data centers, Tor and iCloud Private Relay count too.", ["Turn off your VPN or proxy while you verify. You can turn it back on afterward.", "On an Apple device, turn off iCloud Private Relay for now.", "Use your home connection if you can. School and work networks can look like a VPN.", STAFF]],
   "mobile-data": ["Mobile data isn't accepted here", "Mobile networks hand out new addresses all the time, so this server asks for another connection.", ["Connect to Wi-Fi and try again.", STAFF]],
   geogate: ["Your country isn't accepted here", "This server chooses which countries can verify, based on your connection.", ["If you're traveling, try again from your usual connection.", STAFF]],
   automation: ["Your browser looks automated", "Scripts that drive a browser are used to verify accounts in bulk.", ["Open the link in a normal browser such as Chrome, Edge, Safari or Firefox.", "Turn off extensions that automate pages.", STAFF]],
   antidetect: ["Your browser hides what device it's on", "Tools that invent a new device for every profile let one person run many accounts. Some privacy tools can look like one by mistake.", ["Use a normal browser with its default settings.", "Turn off extensions that change what your browser reports.", STAFF]],
   tampering: ["Your browser looks modified", "Built-in browser functions were rewritten, usually by an extension.", ["Turn off extensions that change or hide browser details, or try a browser with none.", STAFF]],
-  "fake-ua": ["Your browser is reporting the wrong identity", "It claims to be a different browser or system than it is, usually because of an extension.", ["Turn off user agent switchers.", "On a phone, turn off Request desktop site.", "Try again in a normal browser.", STAFF]],
+  "fake-ua": ["Your browser is reporting the wrong identity", "It claims to be a different browser or system than it is, usually because of an extension.", ["Turn off user agent switchers.", "Try again in a normal browser.", STAFF]],
   devtools: ["Developer tools are open", "This server doesn't accept verification with developer tools open.", ["Close the developer tools panel. F12 usually toggles it.", "Reload the page."]],
-  incognito: ["This is a private window", "Private windows throw away cookies, which helps people dodge alt detection.", ["Copy the link, paste it in a normal window, and finish there. You can go back to private browsing afterwards."]],
-  privacy: ["Your browser is blocking device details", "Strict privacy settings hide what this server uses to tell devices apart. There's nothing wrong with using them.", ["Try a browser with default settings for this one step.", STAFF]],
+  incognito: ["This is a private window", "Private windows throw away cookies, which helps people dodge alt detection.", ["Copy the link, paste it in a normal window, and finish there. You can go back to private browsing afterward.", "Guest mode in Chrome can read as a private window too. Open a regular browser profile, or use your own device."]],
+  privacy: ["Your browser is blocking device details", "Strict privacy settings hide what this server uses to tell devices apart. There's nothing wrong with using them.", ["Turn off fingerprint protection or Brave Shields for this site.", "If a blocker or extension is stopping this page's verification scripts, allow them on this site.", "Or use a browser with default settings for this one step.", STAFF]],
   threat: ["This attempt scored too high on risk", "Several small signs added up, such as a VPN, extensions or an unusual setup.", ["Try a normal browser with no extensions on your home connection.", STAFF]],
-  vm: ["This looks like a virtual machine", "Virtual machines can be reset in seconds, which makes them an easy way to look like a new device. Remote desktops and turned-off graphics acceleration can look like one too.", ["Open the link on your own device.", STAFF]],
+  vm: ["This looks like a virtual machine", "Virtual machines can be reset in seconds, which makes them an easy way to look like a new device. Remote desktops and turned-off graphics acceleration can look like one too.", ["Open the link on your own device, not inside a virtual machine or a remote desktop.", "If this is your own computer, turn on hardware acceleration in your browser or update your graphics driver.", STAFF]],
   rooted: ["This phone looks emulated or modified", "Emulators and modified phones let one person look like many. Custom firmware, or a phone reporting a model that doesn't fit its hardware, can trigger this.", ["Verify from a regular phone or computer.", STAFF]],
-  "link-expired": ["This link has expired", "Links are personal and stop working after a while, or when a newer link replaces them.", ["Go to the server's verification channel and press Verify for a new link."]],
+  "link-expired": ["This link has expired", "Links are personal and stop working after a while, or when a newer link replaces them.", ["Go to the server's verification channel and press Verify for a new link.", "If your browser blocks cookies, allow them for this site, then try again.", "If you were removed from the server, contact its staff."]],
   "security-check": ["Your browser couldn't finish the check", "The check needs scripts on this page to run.", ["Turn off anything blocking scripts on this site. Ad blockers are fine.", "Open the link once, and don't go back while it's checking.", "Try another browser if it keeps happening."]],
   "connection-check": ["The connection check isn't available", "This is usually temporary and has nothing to do with your account.", ["Wait a minute and try again."]],
-  "wrong-account": ["That's a different Discord account", "Each link belongs to the account that joined the server.", ["Press Verify in the server for a new link.", "When Discord asks you to authorize, check the account shown. If it's wrong, choose Not you and sign in with the right one."]],
+  "wrong-account": ["That's a different Discord account", "Each link belongs to the account that joined the server.", ["Go back to the verification page and press Continue with Discord. AltWarden asks Discord to show its screen, where you can switch accounts.", "If Discord signs you in as the wrong account again, log out of Discord in this browser, then try again."]],
   "sign-in": ["Discord sign-in didn't finish", "Discord didn't share your account details. This is usually a short hiccup on Discord's side.", ["Press Verify in the server for a new link and try again.", "When Discord asks, press Authorize without changing anything."]],
   "left-server": ["You're not in the server", "The role can only be given to someone in the server.", ["Rejoin the server and verify again."]],
   "not-set-up": ["This server isn't ready", "The server added AltWarden but hasn't finished setting it up. There's nothing you can fix on your side.", ["Let the server's staff know.", "Staff: finish the setup screen on the dashboard, or run /setup."]],
-  "app-removed": ["AltWarden isn't in this server any more", "AltWarden has to be in the server to give you the role. There's nothing you can fix on your side.", ["Let the server's staff know.", "Staff: add AltWarden back to the server. Your settings are kept."]],
+  "app-removed": ["AltWarden isn't in this server any more", "AltWarden has to be in the server to give you the role. There's nothing you can fix on your side.", ["Let the server's staff know.", "Staff: ask the owner of AltWarden to add it back within 30 days, or your settings are deleted."]],
   "server-loading": ["Discord is still loading this server", "Discord can take a few minutes to make a server available again, usually after an outage.", ["Wait a few minutes, then press Try again.", "You can see outages at discordstatus.com."]],
   timeout: ["The check took too long", "Your browser didn't get an answer in time, which is usually a browser or network problem.", ["Reload the page.", "Try another browser or network."]],
   "something-went-wrong": ["Something went wrong on our side", "An unexpected error stopped the check. It has nothing to do with your account.", ["Wait a minute, then reload the page.", "If it keeps happening, press Verify in the server for a new link, or ask the server's staff."]],
-  "role-problem": ["You passed, but the role couldn't be given", "Nothing is wrong with your account. The server's roles need fixing, and staff have been told.", ["Try again once staff have fixed it.", "Staff: run /health. It names the missing permission or deleted role."]],
+  "role-problem": ["You passed, but the role couldn't be given", "Nothing is wrong with your account. The server's roles need fixing.", ["Let the server's staff know, then try again once they've fixed it.", "Staff: run /health. It names the missing permission or deleted role."]],
   "role-too-low": ["AltWarden's role is too low", "You passed, but Discord only lets an app give roles below its own, and this server's order is wrong. Nothing is wrong with your account.", ["Let the server's staff know, then verify again once they've fixed it.", "Staff: in Server Settings, Roles, drag the AltWarden role above the role it gives."]],
 };
 
@@ -55,7 +56,8 @@ async function main() {
   await loadLanguage();
   const content = document.getElementById("content");
   const slug = location.pathname.split("/")[2];
-  const page = PAGES[slug];
+  // A plain object also answers to "constructor", which the address can ask for.
+  const page = Object.hasOwn(PAGES, slug ?? "") ? PAGES[slug] : null;
   if (!page) {
     const list = node("ul", "", { class: "help-index" });
     for (const [key, [title]] of titles) {
@@ -74,4 +76,6 @@ async function main() {
     node("p", t("AltWarden will never ask for your password or two-factor codes."), { class: "note" }));
 }
 
-main();
+main().catch(() => {
+  document.getElementById("content").replaceChildren(node("p", t("Something went wrong. Please try again.")), node("a", t("Reload"), { class: "button", href: location.pathname }));
+});

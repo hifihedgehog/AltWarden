@@ -8,6 +8,10 @@ replaced by an HMAC under a key derived for one server and one kind of identifie
   * the master key stays out of the database, so the digests can't be reversed from it alone.
 
 Derivation is HKDF-SHA256 from RFC 5869. Token storage keeps only a SHA-256 of the token.
+
+A few values have to be read back to be used: a server's proxycheck.io key, and its webhook addresses
+and secrets. Those are sealed with AES-GCM under a key for one purpose and one server, so a stolen
+database or backup holds nothing usable without the master key.
 """
 from __future__ import annotations
 
@@ -16,10 +20,15 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MASTER_KEY_BYTES = 32
 DIGEST_BYTES = 16  # 128 bits: far past any chance of a collision inside one server
+SEALED_PREFIX = "v1."
+NONCE_BYTES = 12
 
 
 def hkdf_sha256(ikm: bytes, *, salt: bytes = b"", info: bytes = b"", length: int = 32) -> bytes:
@@ -45,6 +54,11 @@ def decode_master_key(value: str) -> bytes:
     if len(key) < MASTER_KEY_BYTES:
         raise ValueError(f"MASTER_KEY must hold at least {MASTER_KEY_BYTES} bytes")
     return key
+
+
+def is_sealed(value: str) -> bool:
+    """Whether a stored value is already sealed. Rows from before sealing hold the plain value."""
+    return value.startswith(SEALED_PREFIX)
 
 
 def new_master_key() -> str:
@@ -76,11 +90,17 @@ def network_of(ip: str) -> str:
     return str(address)
 
 
+def wide_network_of(ip: str) -> str:
+    """The block one party is likely to hold many addresses in: an IPv6 /48 or an IPv4 /24."""
+    address = ipaddress.ip_address(network_of(ip))
+    return str(ipaddress.ip_network(f"{address}/{48 if address.version == 6 else 24}", strict=False).network_address)
+
+
 @dataclass(frozen=True)
 class Keyring:
     """Every key AltWarden uses comes from the one master key, one purpose at a time."""
 
-    master: bytes
+    master: bytes = field(repr=False)  # a stray log line or error report must never carry it
 
     def derive(self, purpose: str, scope: str = "") -> bytes:
         return hkdf_sha256(self.master, info=f"altwarden/{purpose}/{scope}".encode())
@@ -96,6 +116,23 @@ class Keyring:
 
     def verify(self, purpose: str, message: str, signature: str) -> bool:
         return hmac.compare_digest(self.sign(purpose, message).encode(), signature.encode("utf-8", "surrogatepass"))  # a cookie can hold any bytes, and compare_digest refuses non-ASCII text
+
+    def seal(self, purpose: str, scope: str | int, text: str) -> str:
+        """Encrypt a value that has to be read back later. A fresh nonce per call, so equal values look unrelated."""
+        nonce = secrets.token_bytes(NONCE_BYTES)
+        sealed = AESGCM(self.derive(f"seal/{purpose}", str(scope))).encrypt(nonce, text.encode("utf-8", "surrogatepass"), None)
+        return SEALED_PREFIX + base64.b64encode(nonce + sealed).decode()
+
+    def unseal(self, purpose: str, scope: str | int, value: str) -> str:
+        """The value `seal` was given. A changed value, or one sealed for another purpose or server, raises ValueError."""
+        if not is_sealed(value):
+            raise ValueError("That value isn't sealed")
+        try:
+            raw = base64.b64decode(value[len(SEALED_PREFIX):], validate=True)
+            text = AESGCM(self.derive(f"seal/{purpose}", str(scope))).decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], None)
+        except (InvalidTag, ValueError) as exc:  # binascii.Error is a ValueError, and so is a short nonce
+            raise ValueError("That sealed value can't be opened") from exc
+        return text.decode("utf-8", "surrogatepass")
 
     def new_device_cookie(self) -> str:
         """A random browser identifier, signed so a forged value is never treated as evidence."""

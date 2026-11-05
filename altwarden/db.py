@@ -1,7 +1,8 @@
-"""SQLite storage. One file, write-ahead logging, and no raw member identifiers in any table.
+"""SQLite storage. One file, with write-ahead logging.
 
-`identifiers.digest` holds keyed hashes from crypto.Keyring. There is no column for an IP address,
-an email address, a cookie value or a Discord token, in this schema or in any JSON stored in it.
+Discord IDs and usernames are stored as they are. `identifiers.digest` holds keyed hashes from
+crypto.Keyring. There is no column for an IP address, an email address, a cookie value or a Discord
+token, in this schema or in any JSON stored in it.
 """
 from __future__ import annotations
 
@@ -14,7 +15,23 @@ from typing import Any, Iterable
 
 import aiosqlite
 
+from .crypto import SEALED_PREFIX, is_sealed
+
 DEPARTED_DAYS = 30  # A server that removes the bot has this long to change its mind
+WAL_LIMIT_BYTES = 4 * 1024 * 1024  # what the log may keep on disk after a checkpoint, about one automatic checkpoint's worth
+# Per member per kind, newest kept. A device value says only the kind of machine, and a person has few, so one account can't collect many to plant.
+IDENTIFIER_CAPS = {"ip": 20, "device": 3, "os": 5, "browser": 5}
+IDENTIFIER_CAP = 10
+MATCH_LIMIT = 200  # accounts per matching value. Ones that got in or were banned sort first, so a pile of failed attempts can't push them out
+LOOKUP_CHUNK = 400  # IDs per query, under SQLite's oldest limit on bound values even when a query lists them twice
+# When each table's row was last relevant, for rows whose server has no record left.
+ORPHAN_AGE = {"sessions": "created_at", "members": "COALESCE(joined_at, last_fail_at, verified_at, 0)", "attempts": "at", "identifiers": "last_seen",
+              "links": "at", "trusted_pairs": "at", "bans": "at", "appeals": "created_at", "audit": "at", "webhooks": "created_at",
+              "lookup_keys": "saved_at", "api_keys": "created_at"}
+# Values the bot has to read back, so they're encrypted rather than hashed: table, its key, and the column.
+SEALED_COLUMNS = (("lookup_keys", "guild_id", "lookup_key"), ("webhooks", "id", "secret"), ("webhooks", "id", "url"))
+
+KEEP = object()  # "not given", where None is a real value
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS guilds (
@@ -49,7 +66,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_member ON sessions (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
-CREATE INDEX IF NOT EXISTS sessions_auth_state ON sessions (auth_state_hash);
 
 CREATE TABLE IF NOT EXISTS members (
     guild_id TEXT NOT NULL,
@@ -65,13 +81,17 @@ CREATE TABLE IF NOT EXISTS members (
     fails INTEGER NOT NULL DEFAULT 0,
     last_fail_at REAL,
     limit_reached_at REAL,
+    limit_held INTEGER NOT NULL DEFAULT 0,
     help_thread_id TEXT,
     forget_on_unban INTEGER NOT NULL DEFAULT 0,
+    kick_warn_at REAL,
     PRIMARY KEY (guild_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS members_status ON members (guild_id, status);
 CREATE INDEX IF NOT EXISTS members_user ON members (user_id);
 CREATE INDEX IF NOT EXISTS members_kick ON members (kick_at);
+CREATE INDEX IF NOT EXISTS members_kick_warn ON members (kick_warn_at) WHERE kick_warn_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS members_limit_reached ON members (limit_reached_at) WHERE limit_reached_at IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY,
@@ -143,6 +163,7 @@ CREATE TABLE IF NOT EXISTS appeals (
     message_id TEXT
 );
 CREATE INDEX IF NOT EXISTS appeals_guild ON appeals (guild_id, status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS appeals_one_waiting ON appeals (guild_id, user_id) WHERE status IN ('open', 'deciding');
 
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY,
@@ -209,11 +230,12 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 class Database:
-    """A thin async wrapper. Queries live here so the rest of the code never builds SQL."""
+    """A thin async wrapper over one connection, holding the queries several places share. Others pass their own bound SQL to `run`, `one` and `all`."""
 
     def __init__(self, path: str | Path):
         self.path = str(path)
         self.conn: aiosqlite.Connection | None = None
+        self._checkpointing = asyncio.Lock()
 
     async def open(self) -> None:
         self.conn = await aiosqlite.connect(self.path)
@@ -222,7 +244,9 @@ class Database:
         await self.conn.execute("PRAGMA synchronous=NORMAL")
         await self.conn.execute("PRAGMA foreign_keys=ON")
         await self.conn.execute("PRAGMA secure_delete=ON")
+        await self.conn.execute(f"PRAGMA journal_size_limit={WAL_LIMIT_BYTES}")
         await self._add_missing_columns()
+        await self._prepare_older_tables()
         await self.conn.executescript(SCHEMA)
         # A check that was running when the process stopped can't finish now, so hand its link back.
         await self.conn.execute("UPDATE sessions SET state = 'signed_in' WHERE state = 'checking'")
@@ -249,6 +273,14 @@ class Database:
                 if name not in present:
                     await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}" + (f" DEFAULT {default}" if default is not None else "")
                                             + (" NOT NULL" if not_null else ""))
+
+    async def _prepare_older_tables(self) -> None:
+        """Clear what an older database holds that the schema no longer allows."""
+        await self.conn.execute("DROP INDEX IF EXISTS sessions_auth_state")  # no query ever filtered on it
+        if await self.scalar("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'appeals'"):
+            # Two submits at once could each open an appeal before only one could wait. The first one's card is what staff saw first.
+            await self.conn.execute("DELETE FROM appeals WHERE status IN ('open', 'deciding') AND id NOT IN "
+                                    "(SELECT MIN(id) FROM appeals WHERE status IN ('open', 'deciding') GROUP BY guild_id, user_id)")
 
     async def close(self) -> None:
         if self.conn is not None:
@@ -311,7 +343,7 @@ class Database:
         return await self.scalar("SELECT value FROM meta WHERE key = ?", (key,))
 
     async def set_meta(self, key: str, value: float) -> None:
-        await self.run("INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+        await self.run("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
 
     # --- guilds -----------------------------------------------------------------------------
 
@@ -342,17 +374,58 @@ class Database:
                 await self.set_guild_field(row["guild_id"], "left_at", time.time())
 
     async def forget_guild(self, guild_id: str) -> None:
-        """Remove every row for a server. Used by the uninstall command."""
+        """Remove every row for a server, and the copies the write-ahead log still holds. Used by the uninstall command."""
+        await self._delete_guild(guild_id)
+        await self.checkpoint()
+
+    async def _delete_guild(self, guild_id: str) -> None:
         for table in ("sessions", "members", "attempts", "identifiers", "links", "trusted_pairs", "bans", "appeals",
                       "audit", "webhooks", "api_keys", "lookup_keys", "command_syncs", "guilds"):
             await self.run(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
 
+    async def checkpoint(self) -> bool:
+        """Empty the write-ahead log. secure_delete only clears the main file, so deleted values stay readable in the log until this.
+
+        Returns False if a reader or an unfinished write held it up. The hourly purge runs it again. Every query shares one
+        worker thread, so waiting out the busy timeout here would stall the whole bot. It gets no wait at all, and only this
+        connection writes, so nothing that slips in before the timeout comes back can find the database busy. The statement
+        runs and finishes as one job on that thread, because a commit from anyone else while it's open is refused.
+        """
+        async with self._checkpointing:  # a second one would read the zero as the value to put back
+            previous = await self.scalar("PRAGMA busy_timeout")
+            await self.scalar("PRAGMA busy_timeout = 0")
+            try:
+                await self.conn.commit()
+                rows = await self.conn.execute_fetchall("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                return False
+            finally:
+                await self.scalar(f"PRAGMA busy_timeout = {int(previous)}")
+            return rows[0][0] == 0
+
     async def lookup_key(self, guild_id: str) -> str | None:
+        """The stored value, sealed by the service. Anything that uses the key goes through Service.lookup_key."""
         return await self.scalar("SELECT lookup_key FROM lookup_keys WHERE guild_id = ?", (guild_id,))
+
+    async def unsealed_secrets(self) -> list[dict]:
+        """Stored secrets still in plain text: where each one lives, for `store_sealed`, and which server's key seals it."""
+        found = []
+        for table, key, column in SEALED_COLUMNS:
+            for row in await self.all(f"SELECT {key} AS row_key, guild_id, {column} AS value FROM {table} WHERE {column} NOT LIKE ?", (f"{SEALED_PREFIX}%",)):
+                found.append({"table": table, "column": column, **row})
+        return found
+
+    async def store_sealed(self, table: str, column: str, row_key: Any, value: str, *, plain: str) -> bool:
+        """Swap one plain value for its sealed form, only if the row still holds that plain value."""
+        keys = {(name, field): key for name, key, field in SEALED_COLUMNS}
+        if (table, column) not in keys or not is_sealed(value):
+            raise ValueError(f"Not a sealed column or value: {table}.{column}")
+        return await self.run(f"UPDATE {table} SET {column} = ? WHERE {keys[table, column]} = ? AND {column} = ?", (value, row_key, plain)) > 0
 
     async def set_lookup_key(self, guild_id: str, key: str | None) -> None:
         if key is None:
             await self.run("DELETE FROM lookup_keys WHERE guild_id = ?", (guild_id,))
+            await self.checkpoint()
             return
         await self.run("INSERT INTO lookup_keys (guild_id, lookup_key, saved_at) VALUES (?, ?, ?) "
                        "ON CONFLICT (guild_id) DO UPDATE SET lookup_key = excluded.lookup_key, saved_at = excluded.saved_at",
@@ -364,15 +437,18 @@ class Database:
         return await self.one("SELECT * FROM members WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
 
     async def touch_member(self, guild_id: str, user_id: str, *, username: str | None = None,
-                           avatar: str | None = None) -> None:
+                           avatar: str | None | object = KEEP) -> None:
+        """Make sure a member has a row. An avatar of None means they removed their picture. Leave it out when it isn't known."""
+        given = avatar is not KEEP
+        picture = avatar if given else None
         await self.run(
             "INSERT INTO members (guild_id, user_id, username, avatar, joined_at) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT (guild_id, user_id) DO UPDATE SET "
-            "username = COALESCE(?, username), avatar = COALESCE(?, avatar)",
-            (guild_id, user_id, username or "", avatar, time.time(), username, avatar))
+            "username = COALESCE(?, username), avatar = CASE WHEN ? THEN ? ELSE avatar END",
+            (guild_id, user_id, username or "", picture, time.time(), username, given, picture))
 
     async def update_member(self, guild_id: str, user_id: str, **fields: Any) -> None:
-        allowed = {"status", "method", "verified_at", "kick_at", "fails", "last_fail_at", "limit_reached_at",
+        allowed = {"status", "method", "verified_at", "kick_at", "kick_warn_at", "fails", "last_fail_at", "limit_reached_at", "limit_held",
                    "help_thread_id", "joined_at", "forget_on_unban", "first_verified_at"}
         if not fields or not set(fields) <= allowed:
             raise ValueError(f"Unknown member fields: {set(fields) - allowed}")
@@ -383,8 +459,8 @@ class Database:
     async def mark_verified(self, guild_id: str, user_id: str, method: str, *, when: float | None = None) -> None:
         """A member got in. The first time is kept for good, because it decides which of two linked accounts is the main one."""
         moment = when or time.time()
-        await self.run("UPDATE members SET status = 'verified', method = ?, verified_at = ?, first_verified_at = COALESCE(first_verified_at, ?), kick_at = NULL, "
-                       "fails = 0, limit_reached_at = NULL WHERE guild_id = ? AND user_id = ?", (method, moment, moment, guild_id, user_id))
+        await self.run("UPDATE members SET status = 'verified', method = ?, verified_at = ?, first_verified_at = COALESCE(first_verified_at, ?), kick_at = NULL, kick_warn_at = NULL, "
+                       "fails = 0, limit_reached_at = NULL, limit_held = 0 WHERE guild_id = ? AND user_id = ?", (method, moment, moment, guild_id, user_id))
 
     # --- identifiers ------------------------------------------------------------------------
 
@@ -395,12 +471,39 @@ class Database:
             "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (guild_id, kind, digest, user_id) "
             "DO UPDATE SET last_seen = excluded.last_seen, expires_at = MAX(identifiers.expires_at, excluded.expires_at)",
             (guild_id, kind, digest, user_id, now, now, expires_at))
+        # The client states most of these, so one account could otherwise store as many as it has attempts.
+        await self.run(
+            "DELETE FROM identifiers WHERE guild_id = ?1 AND user_id = ?2 AND kind = ?3 AND digest NOT IN "
+            "(SELECT digest FROM identifiers WHERE guild_id = ?1 AND user_id = ?2 AND kind = ?3 ORDER BY last_seen DESC, rowid DESC LIMIT ?4)",
+            (guild_id, user_id, kind, IDENTIFIER_CAPS.get(kind, IDENTIFIER_CAP)))
 
     async def matches(self, guild_id: str, user_id: str, kind: str, digest: str) -> list[str]:
+        """Other accounts holding this value, the ones that matter most first: banned, then got in, then most recently seen."""
         rows = await self.all(
-            "SELECT user_id FROM identifiers WHERE guild_id = ? AND kind = ? AND digest = ? "
-            "AND user_id != ? AND expires_at > ?", (guild_id, kind, digest, user_id, time.time()))
+            "SELECT i.user_id FROM identifiers i "
+            "LEFT JOIN members m ON m.guild_id = i.guild_id AND m.user_id = i.user_id "
+            "LEFT JOIN bans b ON b.guild_id = i.guild_id AND b.user_id = i.user_id "
+            "WHERE i.guild_id = ? AND i.kind = ? AND i.digest = ? AND i.user_id != ? AND i.expires_at > ? "
+            "ORDER BY b.user_id IS NOT NULL DESC, COALESCE(m.first_verified_at IS NOT NULL OR m.status = 'approved', 0) DESC, i.last_seen DESC LIMIT ?",
+            (guild_id, kind, digest, user_id, time.time(), MATCH_LIMIT))
         return [row["user_id"] for row in rows]
+
+    async def link_facts(self, guild_id: str, user_id: str, others: list[str]) -> dict[str, dict]:
+        """For each other account: whether it's banned, whether it got in, and whether staff trust it alongside this one."""
+        facts = {other: {"banned": False, "verified": False, "trusted": False} for other in others}
+        for start in range(0, len(others), LOOKUP_CHUNK):
+            part = others[start:start + LOOKUP_CHUNK]
+            marks = ",".join("?" * len(part))
+            for row in await self.all(f"SELECT user_id FROM bans WHERE guild_id = ? AND user_id IN ({marks})", (guild_id, *part)):
+                facts[row["user_id"]]["banned"] = True
+            for row in await self.all(f"SELECT user_id FROM members WHERE guild_id = ? AND user_id IN ({marks}) AND (first_verified_at IS NOT NULL OR status = 'approved')",
+                                      (guild_id, *part)):
+                facts[row["user_id"]]["verified"] = True
+            for row in await self.all(f"SELECT first_id, second_id FROM trusted_pairs WHERE guild_id = ? AND "
+                                      f"((first_id = ? AND second_id IN ({marks})) OR (second_id = ? AND first_id IN ({marks})))",
+                                      (guild_id, user_id, *part, user_id, *part)):
+                facts[row["second_id"] if row["first_id"] == user_id else row["first_id"]]["trusted"] = True
+        return facts
 
     async def digests(self, guild_id: str, user_id: str, kind: str) -> set[str]:
         rows = await self.all("SELECT digest FROM identifiers WHERE guild_id = ? AND user_id = ? AND kind = ? AND expires_at > ?",
@@ -414,7 +517,7 @@ class Database:
 
     async def trust_pair(self, guild_id: str, first: str, second: str, by_id: str) -> None:
         low, high = sorted((first, second), key=int)
-        await self.run("INSERT OR REPLACE INTO trusted_pairs VALUES (?, ?, ?, ?, ?)",
+        await self.run("INSERT OR REPLACE INTO trusted_pairs (guild_id, first_id, second_id, by_id, at) VALUES (?, ?, ?, ?, ?)",
                        (guild_id, low, high, by_id, time.time()))
 
     async def is_banned(self, guild_id: str, user_id: str) -> bool:
@@ -422,14 +525,28 @@ class Database:
 
     async def record_ban(self, guild_id: str, user_id: str, *, by_altwarden: bool = False, keep_days: int = 0) -> None:
         now = time.time()
-        await self.run("INSERT OR REPLACE INTO bans VALUES (?, ?, ?, ?)", (guild_id, user_id, now, int(by_altwarden)))
+        # Discord's ban event follows AltWarden's own ban, and mustn't wipe who did it or restart the ban's clock.
+        await self.run("INSERT INTO bans (guild_id, user_id, at, by_altwarden) VALUES (?, ?, ?, ?) ON CONFLICT (guild_id, user_id) "
+                       "DO UPDATE SET by_altwarden = MAX(bans.by_altwarden, excluded.by_altwarden)", (guild_id, user_id, now, int(by_altwarden)))
         if keep_days:
-            # Ban evasion can only be caught while the banned account's digests exist.
-            await self.run("UPDATE identifiers SET expires_at = MAX(expires_at, ?) WHERE guild_id = ? AND user_id = ?",
+            # Ban evasion can only be caught while the banned account's digests exist. An address moves on to someone else,
+            # and a banned planter could otherwise stop a stranger on it for years, so an address keeps its own date.
+            await self.run("UPDATE identifiers SET expires_at = MAX(expires_at, ?) WHERE guild_id = ? AND user_id = ? AND kind != 'ip'",
                            (now + keep_days * 86400, guild_id, user_id))
 
     async def clear_ban(self, guild_id: str, user_id: str) -> None:
         await self.run("DELETE FROM bans WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+    # --- appeals ----------------------------------------------------------------------------
+
+    async def open_appeal(self, guild_id: str, user_id: str, check_id: str | None, text: str) -> int | None:
+        """Open an appeal, or return None if this member already has one waiting. The database decides, so two submits at once open one."""
+        cursor = await self.conn.execute("INSERT INTO appeals (guild_id, user_id, check_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                                         (guild_id, user_id, check_id, text, time.time()))
+        await self.conn.commit()
+        opened = cursor.lastrowid if cursor.rowcount > 0 else None
+        await cursor.close()
+        return opened
 
     # --- attempts and audit -----------------------------------------------------------------
 
@@ -465,31 +582,56 @@ class Database:
             "members": 0,
             "bans": 0,
             "departed": 0,
+            "orphans": 0,
         }
         for row in await self.all("SELECT guild_id FROM guilds WHERE left_at IS NOT NULL AND left_at < ?", (now - DEPARTED_DAYS * 86400,)):
-            await self.forget_guild(row["guild_id"])
+            await self._delete_guild(row["guild_id"])
             settings_by_guild.pop(row["guild_id"], None)
             removed["departed"] += 1
         for guild_id, settings in settings_by_guild.items():
             privacy = settings["privacy"]
             removed["bans"] += await self.run("DELETE FROM bans WHERE guild_id = ? AND at < ?", (guild_id, now - max(privacy["banned_days"], 1) * 86400))
             # Each hash's own date can be late: the setting may have come down since, or a softban may have
-            # extended it. So go by when it was last seen, except for accounts that are banned now.
+            # extended it. So go by when it was last seen. A ban keeps every kind but the address.
             not_banned = "AND user_id NOT IN (SELECT user_id FROM bans WHERE guild_id = ?)"
-            removed["identifiers"] += await self.run(f"DELETE FROM identifiers WHERE guild_id = ? AND kind = 'ip' AND last_seen < ? {not_banned}",
-                                                     (guild_id, now - privacy["ip_days"] * 86400, guild_id))
+            removed["identifiers"] += await self.run("DELETE FROM identifiers WHERE guild_id = ? AND kind = 'ip' AND last_seen < ?",
+                                                     (guild_id, now - privacy["ip_days"] * 86400))
             removed["identifiers"] += await self.run(f"DELETE FROM identifiers WHERE guild_id = ? AND kind != 'ip' AND last_seen < ? {not_banned}",
                                                      (guild_id, now - privacy["identifier_days"] * 86400, guild_id))
             cutoff = now - privacy["attempt_days"] * 86400
             removed["attempts"] += await self.run("DELETE FROM attempts WHERE guild_id = ? AND at < ?", (guild_id, cutoff))
             removed["audit"] += await self.run("DELETE FROM audit WHERE guild_id = ? AND at < ?", (guild_id, cutoff))
-            removed["appeals"] += await self.run("DELETE FROM appeals WHERE guild_id = ? AND status NOT IN ('open', 'deciding') AND created_at < ?", (guild_id, cutoff))
+            removed["appeals"] += await self.run("DELETE FROM appeals WHERE guild_id = ? AND status != 'deciding' AND created_at < ?", (guild_id, cutoff))
             removed["links"] += await self.run("DELETE FROM links WHERE guild_id = ? AND at < ?", (guild_id, now - privacy["identifier_days"] * 86400))
-            # A member who never verified and left no recent trace has nothing worth keeping.
+            # A member who never verified and left no recent trace has nothing worth keeping. Someone who once got in stays
+            # pending after a later failure or a rejoin, and that first date still decides who the main account is. A limit
+            # reached is kept too while the limit is on, because a row gone would hand back attempts that never return.
+            limit_on = settings["checks"]["max_attempts"]["enabled"]
             removed["members"] += await self.run(
                 "DELETE FROM members WHERE guild_id = ? AND status = 'pending' AND MAX(COALESCE(joined_at, 0), COALESCE(last_fail_at, 0)) < ? "
-                "AND kick_at IS NULL AND help_thread_id IS NULL "
+                f"AND kick_at IS NULL {'AND limit_reached_at IS NULL ' if limit_on else ''}AND help_thread_id IS NULL AND first_verified_at IS NULL AND verified_at IS NULL "
                 "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.guild_id = members.guild_id AND a.user_id = members.user_id) "
                 "AND NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.guild_id = members.guild_id AND i.user_id = members.user_id)",
                 (guild_id, cutoff))
+            # The row that holds a limit needs no name past the date everything else about this person went.
+            await self.run("UPDATE members SET username = '', avatar = NULL WHERE guild_id = ? AND status = 'pending' AND limit_reached_at IS NOT NULL "
+                           "AND (username != '' OR avatar IS NOT NULL) AND MAX(COALESCE(joined_at, 0), COALESCE(last_fail_at, 0)) < ? "
+                           "AND first_verified_at IS NULL AND verified_at IS NULL", (guild_id, cutoff))
+        removed["orphans"] = await self._sweep_orphans(now)
+        await self.checkpoint()
         return removed
+
+    async def _sweep_orphans(self, now: float) -> int:
+        """Delete old rows for a server with no record left, which the per-server rules above never reach.
+
+        The dashboard keeps working after /uninstall, so a key saved then, with the bot removed later, would otherwise stay
+        forever. A server that hasn't finished setting up gets the same time to change its mind as one that left. The search runs
+        off the main connection, because it reads whole tables.
+        """
+        count = 0
+        cutoff = now - DEPARTED_DAYS * 86400
+        for table, age in ORPHAN_AGE.items():
+            orphaned = await self.read_all(f"SELECT DISTINCT guild_id FROM {table} WHERE {age} < ? AND guild_id NOT IN (SELECT guild_id FROM guilds)", (cutoff,))
+            for row in orphaned:
+                count += await self.run(f"DELETE FROM {table} WHERE guild_id = ? AND {age} < ? AND guild_id NOT IN (SELECT guild_id FROM guilds)", (row["guild_id"], cutoff))
+        return count

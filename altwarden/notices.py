@@ -1,6 +1,8 @@
 """Every message AltWarden posts. Plain, with no advertising in any of them."""
 from __future__ import annotations
 
+import re
+
 from .catalog import ACTION_LABEL, BY_ID, FAILURE_TEXT, HELP_SLUG
 from .ports import Button, Notice
 
@@ -11,12 +13,21 @@ TEAL = 0x1FB8A6
 GRAY = 0x7A8596
 DESCRIPTION_LIMIT = 4096
 EMBED_LIMIT = 6000
+# Discord's markdown, after the set discord.py escapes in utils.escape_markdown, plus what makes a mention or a masked
+# link. A bare address stays as it is, because a backslash would break it.
+_URL = r"(?P<url><[^: >]+:\/[^ >]+>|(?:https?|steam):\/\/[^\s<]+[^<.,:;\"\'\]\s])"
+_MARKDOWN = re.compile(rf"{_URL}|(?P<mark>[_\\~|*`<@\[]|^>(?:>>)?\s|^#{{1,3}}|^\s*-)", re.MULTILINE)
+
+
+def escape_text(text: str) -> str:
+    """Show text a member wrote as they typed it, so it can't pass for links, mentions or staff formatting beside a button."""
+    return _MARKDOWN.sub(lambda found: found["url"] or "\\" + found["mark"], text)
 
 
 def check_name(check_id: str | None) -> str:
     if check_id in BY_ID:
         return BY_ID[check_id].name
-    return {"cooldown": "Cooldown", "no_email": "No verified email"}.get(check_id, check_id or "Unknown")
+    return {"cooldown": "Cooldown", "no_email": "No verified email", "role_problem": "Role problem", "honeypot": "Honeypot"}.get(check_id, check_id or "Unknown")
 
 
 def link_notice(guild_name: str, url: str, *, minutes: int, kick_minutes: int | None, bypass: bool = False) -> Notice:
@@ -26,19 +37,27 @@ def link_notice(guild_name: str, url: str, *, minutes: int, kick_minutes: int | 
     if bypass:
         lines.append("Staff set this link up for you, so it skips the checks they chose.")
     if kick_minutes:
-        lines.append(f"Members who don't verify within {_duration(kick_minutes)} are removed.")
+        lines.append(_deadline(kick_minutes))
     return Notice(embeds=[{"title": f"Verify to enter {guild_name}", "description": "\n\n".join(lines), "color": TEAL}],
                   buttons=[Button("Verify", url=url, style="link")])
 
 
-def go_to_channel_notice(guild_name: str, channel_id: str) -> Notice:
+def _deadline(kick_minutes: int | None) -> str:
+    return f"Members who don't verify within {_duration(kick_minutes)} are removed." if kick_minutes else ""
+
+
+def _press_verify(channel_id: str | None) -> str:
+    return f"Go to <#{channel_id}> and press **Verify**." if channel_id else "Go to the server's verification channel and press **Verify**."
+
+
+def go_to_channel_notice(guild_name: str, channel_id: str | None, kick_minutes: int | None = None) -> Notice:
     return Notice(embeds=[{"title": f"Verify to enter {guild_name}",
-                           "description": f"Go to <#{channel_id}> and press **Verify**.", "color": TEAL}])
+                           "description": f"{_press_verify(channel_id)} {_deadline(kick_minutes)}".strip(), "color": TEAL}])
 
 
-def closed_dms_notice(user_id: str, seconds: int) -> Notice:
+def closed_dms_notice(user_id: str, seconds: int, kick_minutes: int | None = None) -> Notice:
     return Notice(content=f"<@{user_id}> your DMs are closed, so AltWarden couldn't message you. "
-                          "Press **Verify** on the message in this channel to verify.",
+                          f"Press **Verify** on the message in this channel to verify. {_deadline(kick_minutes)}".strip(),
                   mention_users=[user_id], delete_after=seconds)
 
 
@@ -48,24 +67,30 @@ def verified_notice(guild_name: str) -> Notice:
 
 def wait_notice(guild_name: str, until: float) -> Notice:
     return Notice(embeds=[{"title": f"Please wait before verifying in {guild_name}",
-                           "description": f"You're on cooldown after a failed attempt. You can try again <t:{int(until)}:R>.", "color": AMBER}])
+                           "description": f"You're on cooldown after a failed attempt. You can leave the server and rejoin to try again <t:{int(until)}:R>.", "color": AMBER}])
 
 
 def problem_notice(guild_name: str, title: str, text: str) -> Notice:
     return Notice(embeds=[{"title": f"{title} ({guild_name})", "description": text, "color": AMBER}])
 
 
-def failed_notice(guild_name: str, reason: str, text: str, action: str, public_url: str, retry_url: str | None,
-                  appeal_url: str | None, show_reason: bool, retry_on: float | None = None) -> Notice:
+def tries_left(count: int) -> str:
+    return f"{count} {'try' if count == 1 else 'tries'} left."
+
+
+def failed_notice(guild_name: str, reason: str, text: str, action: str, public_url: str,
+                  appeal_url: str | None, show_reason: bool, retry_on: float | None = None, *, attempts_left: int | None = None, instant: bool = False) -> Notice:
     what = {"kick": "You were removed from the server.", "ban": "You were banned from the server."}.get(action, "")
     body = (text if show_reason else "You didn't pass this server's checks.") + (f"\n\n{what}" if what else "")
     if show_reason and retry_on:
         body += f"\n\nYou can try again after <t:{int(retry_on)}:f>."
+    if attempts_left:
+        body += f"\n\n{tries_left(attempts_left)}"
+    if instant and action == "deny" and (reason != "max_attempts" or not show_reason):  # Instant mode only checks on a join, so there's no button to press. Rejoining doesn't bring attempts back.
+        body += "\n\nLeave the server and rejoin to try again."
     # With reasons hidden, a page named after the check would give the reason away.
     slug = HELP_SLUG.get(reason, "verification") if show_reason else "verification"
     buttons = [Button("What to do", url=f"{public_url}/help/{slug}", style="link")]
-    if retry_url and action == "deny":
-        buttons.insert(0, Button("Try again", url=retry_url, style="link"))
     if appeal_url:
         buttons.append(Button("Appeal", url=appeal_url, style="link"))
     return Notice(embeds=[{"title": f"You weren't verified in {guild_name}", "description": body, "color": RED}], buttons=buttons)
@@ -76,16 +101,54 @@ def timed_out_notice(guild_name: str) -> Notice:
                            "description": "You were removed, and you can rejoin and try again.", "color": AMBER}])
 
 
-def reset_notice(guild_name: str, url: str | None, channel_id: str | None = None, instant: bool = False) -> Notice:
+def honeypot_notice(guild_name: str, action: str, timeout_minutes: int, appeal_url: str | None) -> Notice:
+    what = {"timeout": f"You were timed out for {_duration(timeout_minutes)}.", "kick": "You were removed from the server.",
+            "softban": "You were removed from the server, and your recent messages were deleted. You can rejoin.", "ban": "You were banned from the server."}[action]
+    return Notice(embeds=[{"title": f"You posted in a trap channel in {guild_name}",
+                           "description": f"This server uses a honeypot channel to catch spam accounts, and your account posted in it. {what}", "color": RED}],
+                  buttons=[Button("Appeal", url=appeal_url, style="link")] if appeal_url else [])
+
+
+def timeout_failed_notice(guild_name: str) -> Notice:
+    return Notice(embeds=[{"title": f"You weren't timed out in {guild_name}",
+                           "description": "AltWarden tried to time you out and it didn't go through. The last message is out of date.", "color": AMBER}])
+
+
+def kick_retry_notice(guild_name: str) -> Notice:
+    """Sent when an Auto Kick AltWarden announced didn't go through. It tries again, so this can't promise they're staying."""
+    return Notice(embeds=[{"title": f"You weren't removed from {guild_name} this time",
+                           "description": "AltWarden tried to remove you and it didn't go through this time, so you're still in the server. It may be tried again, so verify if you want to stay.",
+                           "color": AMBER}])
+
+
+def not_removed_notice(guild_name: str) -> Notice:
+    """Sent when a removal AltWarden announced didn't go through, because the announcement can't wait for the result."""
+    return Notice(embeds=[{"title": f"You weren't removed from {guild_name}",
+                           "description": "AltWarden tried to remove you and it didn't go through, so you're still in the server. The last message is out of date.",
+                           "color": AMBER}])
+
+
+def kick_reminder_notice(guild_name: str, kick_at: float, mode: str, channel_id: str | None) -> Notice:
+    if mode == "instant":
+        how = "Leave the server and rejoin to be checked again."
+    elif mode == "web":
+        how = "Use the link AltWarden sent you" + (f", or press **Verify** in <#{channel_id}>." if channel_id else ".")
+    else:
+        how = _press_verify(channel_id)
+    return Notice(embeds=[{"title": f"Your time to verify in {guild_name} runs out soon",
+                           "description": f"You'll be removed <t:{int(kick_at)}:R> if you haven't verified. {how}", "color": AMBER}])
+
+
+def reset_notice(guild_name: str, url: str | None, channel_id: str | None = None, instant: bool = False, kick_minutes: int | None = None) -> Notice:
     buttons = [Button("Verify", url=url, style="link")] if url else []
     if url:
         where = "Press the button to start."
     elif instant:
         where = "Leave the server and rejoin to be checked again."
     else:
-        where = f"Go to <#{channel_id}> and press **Verify**."
+        where = _press_verify(channel_id)
     return Notice(embeds=[{"title": f"Your verification in {guild_name} was reset",
-                           "description": f"Staff reset your verification, so you need to verify again. {where}", "color": AMBER}],
+                           "description": f"Staff reset your verification, so you need to verify again. {where} {_deadline(kick_minutes)}".strip(), "color": AMBER}],
                   buttons=buttons)
 
 
@@ -137,7 +200,9 @@ def _embed(message: dict, guild_name: str, public_url: str = "") -> dict:
 # --- staff logs ---------------------------------------------------------------------------------
 
 def _account_field(user_id: str, username: str) -> dict:
-    return {"name": "Account", "value": f"<@{user_id}>\n`{username or user_id}`", "inline": True}
+    # A display name can hold anything. Inside a code span only a backtick or a line break can get out.
+    name = re.sub(r"[`\r\n]", "", username or "") or user_id
+    return {"name": "Account", "value": f"<@{user_id}>\n`{name}`", "inline": True}
 
 
 def _detail_text(finding) -> str:
@@ -159,12 +224,14 @@ def _detail_text(finding) -> str:
         for key, name in (("same_os", "system"), ("same_browser", "browser")):
             if detail.get(key) is not None:
                 parts.append(f"{'same' if detail[key] else 'different'} {name}")
+    if detail.get("capped"):
+        parts.append("action lowered, because a link below confirmed never removes anyone by itself")
     if "list" in detail:
         parts.append(f"{detail['list']}list rule")
     return "; ".join(parts)
 
 
-def attempt_log(user_id: str, username: str, avatar_url: str | None, decision, *, took: str, bypassed: list, mode: str) -> dict:
+def attempt_log(user_id: str, username: str, avatar_url: str | None, decision, *, took: str, bypassed: list, mode: str, role_given: str | None = None) -> dict:
     """One embed for one attempt, listing everything it tripped. Holds no raw identifiers."""
     if decision.passed and not decision.findings:
         title, color = "Member verified", GREEN
@@ -173,6 +240,8 @@ def attempt_log(user_id: str, username: str, avatar_url: str | None, decision, *
     else:
         title, color = "Verification stopped", RED
     fields = [_account_field(user_id, username), {"name": "Outcome", "value": took, "inline": True}]
+    if role_given:
+        fields.append({"name": "Role given", "value": f"<@&{role_given}>", "inline": True})
     for finding in decision.findings[:10]:
         label = f"{check_name(finding.check_id)}: {ACTION_LABEL[finding.action]}"
         fields.append({"name": label, "value": _detail_text(finding) or FAILURE_TEXT[finding.reason].format(**(finding.text_args or _no_args(finding))), "inline": False})
@@ -194,10 +263,43 @@ def staff_log(title: str, text: str, color: int = TEAL, **extra) -> dict:
     return embed
 
 
-def appeal_card(appeal_id: int, user_id: str, username: str, check_id: str | None, text: str) -> Notice:
-    embed = {"title": "New appeal", "color": AMBER, "description": text[:1500],
+def embed_size(embed: dict) -> int:
+    """How much of Discord's limit across a message's embeds this one uses: every title, description, field, footer and author."""
+    fields = sum(len(field["name"]) + len(field["value"]) for field in embed.get("fields", []))
+    return (len(embed.get("title", "")) + len(embed.get("description", "")) + fields
+            + len(embed.get("footer", {}).get("text", "")) + len(embed.get("author", {}).get("name", "")))
+
+
+def records_embed(rows: list, show_reason: bool, room: int) -> dict | None:
+    """A member's recent attempts for their help thread, newest first, in the room left. With reasons hidden it lists only when, not why."""
+    title = "Verification records"
+    used = len(title)
+    lines = []
+    for row in rows:
+        line = f"<t:{int(row['at'])}:R>" + (f" {check_name(row['check_id'])}" if show_reason else "")
+        used += len(line) + (1 if lines else 0)
+        if used > room:
+            break
+        lines.append(line)
+    return {"title": title, "color": GRAY, "description": "\n".join(lines)} if lines else None
+
+
+def help_thread_buttons(user_id: str) -> list[Button]:
+    """The rule for each staff button is checked when it's pressed, because the member can see them too."""
+    return [Button("Verify", custom_id=f"aw:staff:verify:{user_id}", style="success"),
+            Button("Create bypass link", custom_id=f"aw:staff:bypass:{user_id}", style="secondary"),
+            Button("Close thread", custom_id="aw:help:close", style="secondary")]
+
+
+ALT_APPEAL_BUTTONS = "Approve lets them in now, and the link still stands if they rejoin. Approve and trust link is for two different people."
+
+
+def appeal_card(appeal_id: int, user_id: str, username: str, check_id: str | None, text: str, *, linked: bool = False) -> Notice:
+    embed = {"title": "New appeal", "color": AMBER, "description": escape_text(text[:1500]),
              "fields": [_account_field(user_id, username),
                         {"name": "Stopped by", "value": check_name(check_id), "inline": True}]}
+    if check_id == "alt_account" or linked:  # a limit reached on an alt link appeals as the limit, and the choice of button still matters
+        embed["fields"].append({"name": "Which button", "value": ALT_APPEAL_BUTTONS, "inline": False})
     return Notice(embeds=[embed], buttons=[
         Button("Approve", custom_id=f"aw:appeal:approve:{appeal_id}", style="success"),
         Button("Approve and trust link", custom_id=f"aw:appeal:trust:{appeal_id}", style="primary"),
@@ -212,4 +314,4 @@ def _duration(minutes: int) -> str:
     if minutes % 60 == 0:
         hours = minutes // 60
         return f"{hours} hour{'s' if hours != 1 else ''}"
-    return f"{minutes} minutes"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
