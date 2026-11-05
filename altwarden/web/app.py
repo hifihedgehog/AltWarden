@@ -749,7 +749,6 @@ def build_app(service: Service, keys: Keyring, oauth: DiscordOAuth, *, trust_pro
     app["oauth"] = oauth
     app["limits"] = RateLimiter()
     app["used_states"] = {}
-    app["imports"] = {}  # a running member import for each server, which also keeps its task alive
     # A key on the app, the way post_message is, so a test never reaches proxycheck.io.
     app["check_lookup_key"] = lambda key: check_lookup_key(app["http"], key)
     app["trust_proxy"] = trust_proxy

@@ -325,13 +325,12 @@ async def setup(request: web.Request) -> web.Response:
 
 
 async def import_members(request: web.Request) -> web.Response:
-    """What /import-members does. Reading a big server's member list takes minutes, so this starts it, and the log says when it's done."""
+    """What /import-members does. It runs in the background, and the log says when it's done."""
     guarded = await _command_guard(request, "import-members")
     if isinstance(guarded, web.Response):
         return guarded
     session, _, _ = guarded
-    app = request.app
-    service: Service = app["service"]
+    service: Service = request.app["service"]
     guild_id = _gid(request)
     guild = await service.port.guild(guild_id)
     if guild is None:
@@ -339,19 +338,8 @@ async def import_members(request: web.Request) -> web.Response:
     role = (await _body(request)).get("role")
     if not any(item["id"] == role for item in guild.roles):
         return json_error(400, "Pick a role from this server.")
-    running = app["imports"]
-    if guild_id in running:
+    if not request.app["import_role"](guild_id, role, session["user_id"], session["username"]):
         return json_error(409, "An import is already running on this server.")
-
-    async def run() -> None:
-        try:
-            await app["import_role"](guild_id, role, session["user_id"], session["username"])
-        except Exception:
-            log.exception("Member import failed for %s", guild_id)
-            await service.import_failed(guild_id)
-        finally:
-            running.pop(guild_id, None)
-    running[guild_id] = asyncio.ensure_future(run())
     return web.json_response({"started": True})
 
 

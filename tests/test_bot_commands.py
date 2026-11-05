@@ -817,6 +817,7 @@ class Replies(Commands):
         interaction.guild.id = int(GUILD_ID)
         interaction.guild.fetch_members = self.members(fakes.OLD_USER, fakes.OTHER_USER)
         await self.command("import-members")(interaction, SimpleNamespace(id=5, is_default=lambda: False))
+        await asyncio.gather(*self.bot.imports.values())
         self.assertIn("Marked 2 members as verified", said(interaction))
         self.assertIn("No roles were given", said(interaction))
         self.assertIn("pressing Verify", said(interaction))
@@ -827,6 +828,7 @@ class Replies(Commands):
         interaction.guild.id = int(GUILD_ID)
         interaction.guild.fetch_members = self.members(fakes.OTHER_USER)
         await self.command("import-members")(interaction, SimpleNamespace(id=5, is_default=lambda: False))
+        await asyncio.gather(*self.bot.imports.values())
         self.assertIn("Marked 1 member as verified", said(interaction))
 
     async def test_a_reset_names_a_role_it_couldnt_take(self):

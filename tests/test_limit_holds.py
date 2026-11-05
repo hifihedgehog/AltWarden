@@ -7,7 +7,9 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import discord
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -429,6 +431,7 @@ class ImportCommand(test_bot_commands.Commands):
         interaction.guild.id = int(GUILD)
         interaction.guild.fetch_members = self.everyone()
         await self.command("import-members")(interaction, SimpleNamespace(id=int(role_id), is_default=lambda: False))
+        await asyncio.gather(*self.bot.imports.values())
         return await self.db.scalar("SELECT method FROM members WHERE guild_id = ? AND user_id = ?", (GUILD, OLD_USER))
 
     async def test_by_the_verified_role_they_already_hold_it(self):
@@ -508,58 +511,103 @@ class ImportFromTheDashboard(test_web_guards.Base):
         response = await self.client.post(f"/api/guilds/{GUILD}/import-members", json={"role": role}, headers=self.headers)
         return response.status, await response.json()
 
-    async def settled(self):
-        await asyncio.gather(*self.app["imports"].values())
-        await asyncio.sleep(0)
-
     async def test_it_starts_and_passes_the_role_and_who_asked(self):
         await self.log_in()
-        hook = self.app["import_role"] = AsyncMock(return_value=2)
+        hook = self.app["import_role"] = MagicMock(return_value=True)
         self.assertEqual((await self.start())[0], 200)
-        await self.settled()
-        self.assertEqual(hook.await_args.args[:2], (GUILD, VERIFIED_ROLE))
-        self.assertEqual(self.app["imports"], {})
+        self.assertEqual(hook.call_args.args[:2], (GUILD, VERIFIED_ROLE))
 
     async def test_it_needs_the_commands_permissions(self):
         await self.log_in(perms=("manage_guild",), owner=False)
-        self.app["import_role"] = AsyncMock()
+        self.app["import_role"] = MagicMock(return_value=True)
         self.assertEqual((await self.start())[0], 403)
-        self.app["import_role"].assert_not_awaited()
+        self.app["import_role"].assert_not_called()
 
     async def test_a_role_from_elsewhere_is_refused(self):
         await self.log_in()
-        self.app["import_role"] = AsyncMock()
+        self.app["import_role"] = MagicMock(return_value=True)
         self.assertEqual((await self.start("980000000000000001"))[0], 400)
-        self.app["import_role"].assert_not_awaited()
+        self.app["import_role"].assert_not_called()
 
-    async def test_a_second_one_waits_for_the_first(self):
+    async def test_one_already_running_is_said_plainly(self):
         await self.log_in()
-        release = asyncio.Event()
-
-        async def slow(*_):
-            await release.wait()
-        self.app["import_role"] = slow
-        self.assertEqual((await self.start())[0], 200)
-        self.assertEqual((await self.start())[0], 409)
-        release.set()
-        await self.settled()
-        self.assertEqual((await self.start())[0], 200)
-        await self.settled()
-
-    async def test_a_failure_reaches_staff_and_lets_it_run_again(self):
-        await self.log_in()
-        self.app["import_role"] = AsyncMock(side_effect=RuntimeError("no"))
-        told = []
-        self.service.import_failed = AsyncMock(side_effect=lambda guild_id: told.append(guild_id))
-        with self.assertLogs("altwarden.api", "ERROR"):
-            await self.start()
-            await self.settled()
-        self.assertEqual(told, [GUILD])
-        self.assertEqual(self.app["imports"], {})
+        self.app["import_role"] = MagicMock(return_value=False)
+        status, body = await self.start()
+        self.assertEqual((status, body["error"]), (409, "An import is already running on this server."))
 
     async def test_the_guild_view_says_who_can(self):
         await self.log_in()
         self.assertTrue((await (await self.client.get(f"/api/guilds/{GUILD}", headers=self.session_cookie)).json())["can_import"])
+
+
+class ImportInTheBackground(test_bot_commands.Commands):
+    def role(self):
+        return SimpleNamespace(id=5, is_default=lambda: False)
+
+    def interaction(self, walk):
+        interaction = fake_interaction()
+        interaction.guild.id = int(GUILD)
+        interaction.guild.fetch_members = walk
+        return interaction
+
+    def members(self):
+        async def walk(limit=None):
+            yield SimpleNamespace(id=int(OLD_USER), bot=False, get_role=lambda _: True)
+        return walk
+
+    async def settled(self):
+        await asyncio.gather(*self.bot.imports.values())
+
+    async def test_the_answer_comes_before_the_list_is_read(self):
+        release = asyncio.Event()
+
+        async def walk(limit=None):
+            await release.wait()
+            yield SimpleNamespace(id=int(OLD_USER), bot=False, get_role=lambda _: True)
+        interaction = self.interaction(walk)
+        await self.command("import-members")(interaction, self.role())
+        self.assertIn("Importing everyone", interaction.said[-1][0])
+        self.assertTrue(interaction.said[-1][1]["ephemeral"])
+        release.set()
+        await self.settled()
+        self.assertIn("Marked 1 member as verified", interaction.said[-1][0])
+        self.assertEqual(self.bot.imports, {})
+
+    async def test_a_second_one_is_told_the_first_is_running(self):
+        release = asyncio.Event()
+
+        async def walk(limit=None):
+            await release.wait()
+            yield SimpleNamespace(id=int(OLD_USER), bot=False, get_role=lambda _: True)
+        first = self.interaction(walk)
+        await self.command("import-members")(first, self.role())
+        second = self.interaction(self.members())
+        await self.command("import-members")(second, self.role())
+        self.assertEqual(second.said[-1][0], "An import is already running on this server.")
+        release.set()
+        await self.settled()
+        self.assertTrue(self.bot.start_import(self.interaction(self.members()).guild, "5", STAFF, "staff"))
+        await self.settled()
+
+    async def test_a_failure_tells_staff_and_lets_it_run_again(self):
+        async def walk(limit=None):
+            raise RuntimeError("no")
+            yield
+        self.service.import_failed = AsyncMock()
+        interaction = self.interaction(walk)
+        with self.assertLogs("altwarden.bot", "ERROR"):
+            await self.command("import-members")(interaction, self.role())
+            await self.settled()
+        self.service.import_failed.assert_awaited_once_with(GUILD)
+        self.assertEqual(interaction.said[-1][0], "The import didn't finish. Run it again.")
+        self.assertEqual(self.bot.imports, {})
+
+    async def test_a_reply_past_its_15_minutes_changes_nothing(self):
+        interaction = self.interaction(self.members())
+        interaction.edit_original_response = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=401, reason="expired"), "expired"))
+        await self.command("import-members")(interaction, self.role())
+        await self.settled()
+        self.assertEqual(await self.db.scalar("SELECT status FROM members WHERE guild_id = ? AND user_id = ?", (GUILD, OLD_USER)), "verified")
 
 
 class NoLimitOnHealth(test_bot_commands.Commands):

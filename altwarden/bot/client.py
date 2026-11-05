@@ -60,6 +60,7 @@ class AltWardenBot(discord.Client):
         self._stopping = False
         self._overrides: dict[str, tuple[float, dict]] = {}
         self._catch_up_task: asyncio.Task | None = None
+        self.imports: dict[str, asyncio.Task] = {}  # the member import running on each server
         self._catch_up_again: float | None = None
         self._missed_since: float | None = None  # join events from here on won't arrive, and need looking for
         self._disconnected_at: float | None = None  # Discord may still replay these, if the session resumes
@@ -200,6 +201,8 @@ class AltWardenBot(discord.Client):
         self.hour_timer.cancel()
         if self._catch_up_task is not None:
             self._catch_up_task.cancel()
+        for task in self.imports.values():  # nothing is marked until the whole list is read, so this one can simply run again
+            task.cancel()
         # A join cut short here would leave a member half handled, so what's running gets to finish, on a connection that still works, and nothing new starts.
         self._stopping = True
         running = [task for task in asyncio.all_tasks() if task.get_name().startswith(HANDLER_TASKS) and task is not asyncio.current_task()]
@@ -412,6 +415,30 @@ class AltWardenBot(discord.Client):
         members = [str(member.id) async for member in guild.fetch_members(limit=None) if not member.bot and (everyone or member.get_role(int(role_id)) is not None)]
         document = await self.service.get_settings(str(guild.id))
         return await self.service.import_members(str(guild.id), members, actor_id, actor_name, holding_role=role_id == document["core"]["verified_role"])
+
+    def start_import(self, guild: discord.Guild, role_id: str, actor_id: str, actor_name: str, on_done=None) -> bool:
+        """Run a member import in the background, one per server. False means one is already running.
+
+        Reading a big server's list takes minutes, and a reply to a command can only be changed for 15 of them, so nothing waits on it.
+        `on_done` gets the count, or None if the import failed.
+        """
+        guild_id = str(guild.id)
+        if guild_id in self.imports:
+            return False
+
+        async def run() -> None:
+            count = None
+            try:
+                count = await self.import_role_members(guild, role_id, actor_id, actor_name)
+            except Exception:
+                log.exception("Member import failed for %s", guild_id)
+                await self.service.import_failed(guild_id)
+            finally:
+                self.imports.pop(guild_id, None)
+            if on_done is not None:
+                await on_done(count)
+        self.imports[guild_id] = asyncio.ensure_future(run())
+        return True
 
     async def post_message(self, guild_id: str, which: str) -> bool:
         """Post the verification or honeypot message, then remove the previous copy, wherever it was."""
@@ -915,10 +942,17 @@ def register_commands(bot: AltWardenBot) -> None:
             return
         if await ready(bot, interaction) is None:
             return
-        await interaction.response.defer(ephemeral=True)
-        count = await bot.import_role_members(interaction.guild, str(role.id), str(interaction.user.id), interaction.user.name)
-        await interaction.followup.send(f"Marked {count} member{'s' if count != 1 else ''} as verified. No roles were given. "
-                                        "Anyone missing the verified role gets it by pressing Verify, with no checks.", ephemeral=True)
+
+        async def done(count: int | None) -> None:
+            text = "The import didn't finish. Run it again." if count is None else (
+                f"Marked {count} member{'s' if count != 1 else ''} as verified. No roles were given. Anyone missing the verified role gets it by pressing Verify, with no checks.")
+            try:
+                await interaction.edit_original_response(content=text)
+            except discord.HTTPException:
+                log.info("The import's reply can't be changed any more. The log has its result.")
+        await interaction.response.send_message("Importing everyone with that role. A big server takes a few minutes. This message updates when it's done, and the log says so too.", ephemeral=True)
+        if not bot.start_import(interaction.guild, str(role.id), str(interaction.user.id), interaction.user.name, done):
+            await interaction.edit_original_response(content="An import is already running on this server.")
 
     @tree.command(name="raid", description="Turn raid mode on or off")
     @app_commands.guild_only()

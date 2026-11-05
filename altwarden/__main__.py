@@ -92,7 +92,7 @@ async def run(args: argparse.Namespace) -> None:
         webhook_http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicResolver()))
         app["webhook_http"] = webhook_http
         app["post_message"] = bot.post_message
-        app["import_role"] = lambda guild_id, role_id, actor_id, actor_name: bot.import_role_members(bot.get_guild(int(guild_id)), role_id, actor_id, actor_name)
+        app["import_role"] = lambda guild_id, role_id, actor_id, actor_name: bot.start_import(bot.get_guild(int(guild_id)), role_id, actor_id, actor_name)
         service.webhook_sender = lambda guild_id, event, payload: send_webhooks(app, guild_id, event, payload)
         service.proxycheck = lambda ip, key: external_lookup(http, ip, key)
 

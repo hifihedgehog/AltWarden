@@ -60,6 +60,7 @@ def fake_interaction(user_id=STAFF, *, perms=("manage_guild", "manage_roles"), o
     interaction.response.defer = AsyncMock(side_effect=defer)
     interaction.response.is_done = lambda: state["done"]
     interaction.followup.send = AsyncMock(side_effect=follow)
+    interaction.edit_original_response = AsyncMock(side_effect=lambda **kwargs: interaction.said.append((kwargs.get("content", ""), kwargs)))
     return interaction
 
 
