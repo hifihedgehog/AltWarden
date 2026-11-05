@@ -126,8 +126,7 @@ export async function render(view) {
     if (reach === "none") {
       notes.push("With no evidence switched on, this check can't match anyone.");
     } else if (REACH_ORDER.indexOf(reach) < REACH_ORDER.indexOf(check.min_confidence)) {
-      const name = (id) => id[0].toUpperCase() + id.slice(1);
-      notes.push(`With this evidence, the strongest match is ${name(reach)}, so nothing reaches ${name(check.min_confidence)}. Those matches are only noted for staff, unless the other account is banned and the match scores 60 or more.`);
+      notes.push("With this evidence, nothing reaches that level. Those matches are only noted for staff, unless the other account is banned and the match scores 60 or more.");
     }
     return notes.length ? h("div", { class: "notice warn field wide evidence-warning", text: notes.join(" ") }) : null;
   }
