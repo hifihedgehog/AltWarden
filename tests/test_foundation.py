@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from altwarden import access, catalog, crypto, db, settings
+from fakes import DB_KEY
 
 
 class HkdfVectors(unittest.TestCase):
@@ -250,7 +251,7 @@ class AccessRules(unittest.TestCase):
 class Storage(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.db = db.Database(os.path.join(self.dir.name, "t.db"))
+        self.db = db.Database(os.path.join(self.dir.name, "t.db"), DB_KEY)
         await self.db.open()
 
     async def asyncTearDown(self):

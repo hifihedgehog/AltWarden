@@ -18,7 +18,7 @@ from altwarden import altmatch, analytics, db as database, engine, health, notic
 from altwarden.ports import DiscordUnavailable
 from altwarden.web.api import webhook_problem
 from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, RateLimiter, VERIFY_FLOW_COOKIE
-from fakes import CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE
+from fakes import CHANNEL, DB_KEY, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE
 from test_detection import CHROME_WIN, clean_report, judge
 from test_flow import Base, Dashboard, solve
 
@@ -540,7 +540,7 @@ class AltEvidence(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import tempfile
         self.folder = tempfile.TemporaryDirectory()
-        self.db = database.Database(os.path.join(self.folder.name, "t.db"))
+        self.db = database.Database(os.path.join(self.folder.name, "t.db"), DB_KEY)
         await self.db.open()
         await self.db.touch_member("1", "10")
         await self.db.update_member("1", "10", status="verified")
@@ -784,14 +784,14 @@ class Restarts(Base):
 
     async def test_an_older_database_gets_its_new_columns(self):
         path = self.db.path + ".older"
-        connection = sqlite3.connect(path)
+        connection = database.open_encrypted(path, DB_KEY)
         connection.execute("CREATE TABLE members (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', PRIMARY KEY (guild_id, user_id))")
         connection.execute("CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open', created_at REAL NOT NULL, expires_at REAL NOT NULL)")
         connection.execute("INSERT INTO members (guild_id, user_id, username) VALUES ('1', '2', 'kept')")
         connection.execute("INSERT INTO sessions (token_hash, guild_id, user_id, state, created_at, expires_at) VALUES ('t', '1', '2', 'checking', 0, 0)")
         connection.commit()
         connection.close()
-        older = database.Database(path)
+        older = database.Database(path, DB_KEY)
         await older.open()
         try:
             record = await older.one("SELECT username, forget_on_unban, fails FROM members")

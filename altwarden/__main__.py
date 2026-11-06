@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 from . import __version__
 from .crypto import Keyring, decode_master_key
-from .db import Database
+from .db import Database, DatabaseKeyError
 from .netintel import NetIntel, external_lookup
 from .service import Service
 from .web.api import PublicResolver, send_webhooks
@@ -63,7 +63,7 @@ async def run(args: argparse.Namespace) -> None:
     data_dir = Path(args.data).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     keys = Keyring(decode_master_key(os.environ["MASTER_KEY"]))
-    db = Database(data_dir / "altwarden.db")
+    db = Database(data_dir / "altwarden.db", keys.database_key())
     await db.open()
     # Whatever fails below, the database has to close. Its worker thread keeps the process alive
     # otherwise, and a process that won't die is one systemd never restarts.
@@ -148,6 +148,9 @@ def main() -> None:
     logging.getLogger("discord").setLevel(logging.WARNING)
     try:
         asyncio.run(run(args))
+    except DatabaseKeyError as error:
+        log.critical("%s", error)
+        sys.exit(EXIT_NO_RESTART)
     except discord.LoginFailure:
         log.critical("Discord refused the bot token. Put the right one in DISCORD_TOKEN, then start the service again.")
         sys.exit(EXIT_NO_RESTART)

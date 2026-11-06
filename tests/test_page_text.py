@@ -255,7 +255,9 @@ class Retention(unittest.TestCase):
         self.assertIn("A stolen database alone reveals none of them", security)
         privacy = visible("privacy.html")
         self.assertNotIn("alone reveals nothing", privacy)
-        self.assertIn("a copy alone reveals none of them, and a copy with the key reveals them all", privacy)
+        self.assertIn("a copy alone reveals none of them", privacy)
+        self.assertIn("so a copy of it shows no Discord IDs, names, attempt results or appeal text", privacy)
+        self.assertIn("An encrypted file. The database, its write-ahead log and its nightly backups are encrypted with SQLCipher", security)
 
 
 class Limits(unittest.TestCase):

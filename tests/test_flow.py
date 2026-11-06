@@ -2,7 +2,6 @@
 import json
 import os
 import re
-import sqlite3
 import sys
 import tempfile
 import time
@@ -22,7 +21,7 @@ from altwarden.netintel import NetIntel, load_lists
 from altwarden.service import Service
 from altwarden.web.app import BROWSER_COOKIE, DEVICE_COOKIE, FLOW_COOKIE, SESSION_COOKIE, VERIFY_FLOW_COOKIE, build_app
 from altwarden.web.oauth import DiscordOAuth
-from fakes import (CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE, FakeDiscordApi,
+from fakes import (DB_KEY, CHANNEL, GUILD, LOG_CHANNEL, OLD_USER, OTHER_USER, STAFF, UNVERIFIED_ROLE, VERIFIED_ROLE, FakeDiscordApi,
                    FakePort)
 from test_detection import clean_report
 
@@ -41,7 +40,7 @@ class Base(unittest.IsolatedAsyncioTestCase):
         (folder / "lists" / "vpn-x4b-ipv4.txt").write_text("45.33.32.0/24\n")
         (folder / "lists" / "disposable.txt").write_text("mailinator.com\n")
         (folder / "lists" / "country-ipv4.csv").write_text("3221225984,3221226239,US\n")
-        self.db = db.Database(folder / "t.db")
+        self.db = db.Database(folder / "t.db", DB_KEY)
         await self.db.open()
         self.keys = crypto.Keyring(b"k" * 32)
         self.net = NetIntel(folder / "lists")
@@ -76,9 +75,13 @@ class Base(unittest.IsolatedAsyncioTestCase):
         await self.client.start_server()
 
     def database_dump(self) -> str:
-        connection = sqlite3.connect(self.db.path)
+        """Every table, index and row, decrypted, as one piece of text to search."""
+        connection = db.open_encrypted(self.db.path, DB_KEY)
         try:
-            return "\n".join(connection.iterdump())
+            lines = [str(row[0]) for row in connection.execute("SELECT sql FROM sqlite_master")]
+            for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+                lines += [f"{table}: {row!r}" for row in connection.execute(f'SELECT * FROM "{table}"')]
+            return "\n".join(lines)
         finally:
             connection.close()
 

@@ -14,8 +14,10 @@
     <p>AltWarden is built on one assumption: the database will leak someday. Everything below follows from planning for that.</p>
 
     <h2>What a stolen database gives an attacker</h2>
+    <p>An encrypted file. The database, its write-ahead log and its nightly backups are encrypted with SQLCipher, using 256-bit AES and an authentication code on every page. Without the master key, no table, name or row can be read from any of them.</p>
+    <p>Even with the key, this is all the file holds:</p>
     <table>
-      <tr><th>They would get</th><th>They would not get</th></tr>
+      <tr><th>In the database</th><th>Not in the database</th></tr>
       <tr><td>Discord IDs, usernames and avatars of people who tried to verify</td><td>Any IP address, email address, cookie value or fingerprint</td></tr>
       <tr><td>Attempt results and labels</td><td>Any Discord access or refresh token</td></tr>
       <tr><td>Appeal text, staff notes on appeals, and staff names in the audit log</td><td>Any API key, because only its hash is stored</td></tr>
@@ -26,8 +28,9 @@
 
     <h2>How it's built</h2>
     <ul>
-      <li>Identifiers are hashed with HMAC-SHA256 under keys derived per server and per kind with HKDF from RFC 5869.</li>
-      <li>A server's webhook addresses, webhook secrets and proxycheck.io key have to be read back to be used, so they're encrypted with AES-GCM under a key derived for that server. A stolen database alone reveals none of them.</li>
+      <li>The database key is derived from the master key with HKDF from RFC 5869, for that one purpose, and is never stored.</li>
+      <li>Identifiers are hashed with HMAC-SHA256 under keys derived per server and per kind the same way.</li>
+      <li>A server's webhook addresses, webhook secrets and proxycheck.io key have to be read back to be used, so they're encrypted a second time with AES-GCM, under a key derived for that server. A stolen database alone reveals none of them.</li>
       <li>The master key lives in the process environment and never in the database or its backups.</li>
       <li>Discord tokens stay in memory for one read, are never stored, and are revoked under RFC 7009 right after. Staff who save Discord's command permissions approve one write, and that token is revoked the same way.</li>
       <li>Verification links are stored as hashes, work for one member, and expire.</li>

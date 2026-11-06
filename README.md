@@ -15,20 +15,25 @@ In October 2026 the verification bot Double Counter said an attacker may have re
 
 ## What a stolen database would give an attacker
 
-| They would get | They would not get |
+An encrypted file. The database, its write-ahead log and its nightly backups are encrypted with [SQLCipher](https://github.com/sqlcipher/sqlcipher), under a key derived from `MASTER_KEY` that's never stored. Without the master key, no table, name or row can be read from any of them.
+
+Even with the key, this is all the file holds:
+
+| In the database | Not in the database |
 |---|---|
 | Discord IDs, usernames and avatars of people who tried to verify | Any IP address, email address, cookie value or fingerprint |
 | Attempt results and labels | Any Discord access or refresh token |
 | Keyed hashes they can't read without the key | A way to connect one person's hashes across two servers |
 | Webhook addresses and secrets, and any proxycheck.io key, encrypted | Any of those in readable form, without the master key |
 
-The [security page](altwarden/web/static/security.html) lists how that works and where it stops working. A full takeover of the server, with both the database and the key, defeats the hashing and the encryption. Browser checks run in the member's browser, so a custom client can forge them and pass as a new person.
+The [security page](altwarden/web/static/security.html) lists how that works.
 
 ## At a glance
 
 | | |
 |---|---|
 | Source code | Public, MIT |
+| Database at rest | Encrypted, with its log and backups |
 | Raw IPs and fingerprints at rest | None |
 | Discord tokens at rest | None |
 | Ads on the verification page | None |
@@ -87,13 +92,37 @@ You need Python 3.11 or newer and a reverse proxy with HTTPS.
    cp .env.example .env
    chmod 600 .env
    ```
-   Put the printed key in `.env` as `MASTER_KEY`, with your bot token and client secret. Back up the key on its own. Losing it makes every stored hash unmatchable, and every saved webhook and lookup key unreadable.
+   Put the printed key in `.env` as `MASTER_KEY`, with your bot token and client secret. Back up the key on its own, away from the database. The database and its backups open only with this key.
 3. Run it:
    ```sh
    python -m altwarden --public-url https://your.site --port 8892
    ```
-   It listens on `127.0.0.1` and downloads its network lists on the first run. Its log has the link for adding the bot to your server. `altwarden.service` is a hardened systemd unit.
+   It creates an encrypted database on the first run, listens on `127.0.0.1` and downloads its network lists. Its log has the link for adding the bot to your server. `altwarden.service` is a hardened systemd unit.
 4. Point your proxy at that port, have it add the client address as the last value of `X-Forwarded-For`, which is the only value AltWarden reads, and **turn off the proxy's access log or remove the client address from it**. Otherwise raw addresses end up in your web logs. If no usable address arrives, verification answers 503. If you keep database backups, say how long on your privacy page.
+
+To copy the database while the bot runs, use `python -m altwarden.backup data/altwarden.db backups/altwarden.db`. The copy is encrypted under the same key.
+
+If you ran a version before 1.3, convert your database once. Stop the bot, then run:
+
+```sh
+python -m altwarden.encrypt_database data/altwarden.db data/altwarden-encrypted.db
+```
+
+It checks every table against the original before it finishes. Move the new file over `data/altwarden.db`, start the bot, and encrypt or remove any older plain copies.
+
+### Getting the data back
+
+Everything comes back with `MASTER_KEY`, so keep a copy of it somewhere safe.
+
+To put a copy back, stop the bot, delete `altwarden.db-wal` and `altwarden.db-shm` if they're there, copy the backup over `data/altwarden.db`, and start the bot.
+
+To read the data in any SQLite tool, make a plain copy:
+
+```sh
+python -m altwarden.decrypt_database backups/altwarden.db readable.db
+```
+
+It checks every table against the source before it finishes. The new file isn't encrypted, so keep it private and delete it when you're done.
 
 Run the tests with `python -m unittest discover -s tests`. `python scripts/browser_check.py` drives the real pages in headless Edge or Chrome, and changes every control on the Rules, Messages and Access pages to prove it saves. `python scripts/detector_controls.py` and `python scripts/engine_controls.py` run the browser checks on real Chromium, Firefox and WebKit, clean and with what each check should catch.
 

@@ -1,6 +1,7 @@
-"""SQLite storage. One file, with write-ahead logging.
+"""SQLite storage, encrypted with SQLCipher. One file, with write-ahead logging.
 
-Discord IDs and usernames are stored as they are. `identifiers.digest` holds keyed hashes from
+The file and its log are unreadable without a key derived from the master key, and that key is never stored.
+Inside, Discord IDs and usernames are stored as they are. `identifiers.digest` holds keyed hashes from
 crypto.Keyring. There is no column for an IP address, an email address, a cookie value or a Discord
 token, in this schema or in any JSON stored in it.
 """
@@ -8,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
+import re
 import time
 from pathlib import Path
 from typing import Any, Iterable
 
 import aiosqlite
+from sqlcipher3 import dbapi2 as cipher
 
 from .crypto import SEALED_PREFIX, is_sealed
 
@@ -229,17 +231,55 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
+CIPHER_COMPATIBILITY = 4  # the file format, stated so a newer library's defaults can't change what it expects to read
+
+
+class DatabaseKeyError(RuntimeError):
+    """The key doesn't open this file. No key is ever in the message."""
+
+
+def open_encrypted(target: str, key: str, **options) -> cipher.Connection:
+    """A connection to the encrypted database, given the key before anything else can touch the file.
+
+    The key goes in raw, so opening a connection costs no password stretching. Staff pages open one for each read.
+    """
+    connection = cipher.connect(target, **options)
+    try:
+        connection.execute(f"PRAGMA key = \"x'{key}'\"").fetchall()
+        connection.execute(f"PRAGMA cipher_compatibility = {CIPHER_COMPATIBILITY}").fetchall()
+        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()  # the first read is when a wrong key shows
+    except cipher.DatabaseError as error:
+        connection.close()
+        if "not a database" in str(error):
+            raise DatabaseKeyError("This MASTER_KEY can't open the database. A plain database from before version 1.3 needs converting once: "
+                                   "stop the bot and run python -m altwarden.encrypt_database. Otherwise it was made with another key, so put that key back.") from None
+        raise
+    return connection
+
+
+def integrity_problems(connection: cipher.Connection) -> list[str]:
+    """What SQLCipher and SQLite each find wrong with a database. An empty list means they found nothing."""
+    problems = [row[0] for row in connection.execute("PRAGMA cipher_integrity_check")]
+    if problems:  # SQLite's own check can't read a page that fails its authentication code, and stops with an error
+        return problems
+    return [row[0] for row in connection.execute("PRAGMA integrity_check") if row[0] != "ok"]
+
+
 class Database:
     """A thin async wrapper over one connection, holding the queries several places share. Others pass their own bound SQL to `run`, `one` and `all`."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, key: str):
+        if not re.fullmatch(r"[0-9a-f]{64}", key):  # it goes into a PRAGMA, which can't take a bound value
+            raise ValueError("The database key has to be 64 lowercase hex digits. Use Keyring.database_key.")
         self.path = str(path)
+        self._key = key
         self.conn: aiosqlite.Connection | None = None
         self._checkpointing = asyncio.Lock()
 
     async def open(self) -> None:
-        self.conn = await aiosqlite.connect(self.path)
-        self.conn.row_factory = aiosqlite.Row
+        # aiosqlite only knows how to open stock SQLite, so it gets a connector, which it runs on its own thread.
+        self.conn = await aiosqlite.Connection(lambda: open_encrypted(self.path, self._key), 64)
+        self.conn.row_factory = cipher.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.execute("PRAGMA synchronous=NORMAL")
         await self.conn.execute("PRAGMA foreign_keys=ON")
@@ -258,7 +298,7 @@ class Database:
 
     async def _add_missing_columns(self) -> None:
         """CREATE TABLE IF NOT EXISTS leaves an older table as it was, so give it whatever the schema has since added."""
-        model = sqlite3.connect(":memory:")
+        model = cipher.connect(":memory:")
         try:
             model.executescript(SCHEMA)
             tables = [row[0] for row in model.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
@@ -321,13 +361,13 @@ class Database:
         await self.conn.executemany(sql, rows)
         await self.conn.commit()
 
-    def reader(self) -> sqlite3.Connection:
+    def reader(self) -> cipher.Connection:
         """A separate read-only connection, for slow staff pages. Make it on the thread that uses it.
 
         One connection handles every member's verification, so a long read on it would make them wait.
         """
-        connection = sqlite3.connect(f"{Path(self.path).resolve().as_uri()}?mode=ro", uri=True)
-        connection.row_factory = sqlite3.Row
+        connection = open_encrypted(f"{Path(self.path).resolve().as_uri()}?mode=ro", self._key, uri=True)
+        connection.row_factory = cipher.Row
         return connection
 
     async def read_all(self, sql: str, args: Iterable[Any] = ()) -> list[dict]:
@@ -397,7 +437,7 @@ class Database:
             try:
                 await self.conn.commit()
                 rows = await self.conn.execute_fetchall("PRAGMA wal_checkpoint(TRUNCATE)")
-            except sqlite3.OperationalError:
+            except cipher.OperationalError:
                 return False
             finally:
                 await self.scalar(f"PRAGMA busy_timeout = {int(previous)}")

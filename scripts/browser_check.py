@@ -2112,9 +2112,9 @@ async def main(shots: Path, only_controls: bool = False, scenarios: list | None 
         PORT = free_port()  # another copy of this script can be running beside this one
         PUBLIC = f"http://127.0.0.1:{PORT}"
     work = tempfile.mkdtemp(prefix="altwarden-check-")
-    database = db.Database(os.path.join(work, "t.db"))
-    await database.open()
     keys = crypto.Keyring(b"k" * 32)
+    database = db.Database(os.path.join(work, "t.db"), keys.database_key())
+    await database.open()
     net = NetIntel(ROOT / "data" / "lists")
     net.lists = await asyncio.to_thread(load_lists, ROOT / "data" / "lists")
     port = TwoServers() if scenarios is not None else FakePort()

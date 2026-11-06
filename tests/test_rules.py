@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from altwarden import access, altmatch, analytics, catalog, crypto, db as db_module, engine, notices, settings, signals
 from altwarden.netintel import NetInfo
-from fakes import GUILD, OLD_USER, OTHER_USER
+from fakes import DB_KEY, GUILD, OLD_USER, OTHER_USER
 from test_detection import clean_report
 from test_flow import Base as FlowBase
 
@@ -43,7 +43,7 @@ def alt_rules(**options):
 class DatabaseCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.folder = tempfile.TemporaryDirectory()
-        self.db = db_module.Database(Path(self.folder.name) / "t.db")
+        self.db = db_module.Database(Path(self.folder.name) / "t.db", DB_KEY)
         await self.db.open()
 
     async def asyncTearDown(self):
@@ -941,7 +941,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 def previous_database(path):
     """A database from the last release with a row in every table."""
-    connection = sqlite3.connect(path)
+    connection = db_module.open_encrypted(str(path), DB_KEY)
     connection.executescript(PREVIOUS_SCHEMA)
     now = time.time()
     connection.execute("INSERT INTO guilds (guild_id, settings, created_at, updated_at) VALUES ('1', '{}', 1, 1)")
@@ -971,7 +971,7 @@ class OlderDatabase(unittest.IsolatedAsyncioTestCase):
         self.folder = tempfile.TemporaryDirectory()
         self.path = Path(self.folder.name) / "old.db"
         previous_database(self.path)
-        self.db = db_module.Database(self.path)
+        self.db = db_module.Database(self.path, DB_KEY)
         await self.db.open()
 
     async def asyncTearDown(self):
@@ -992,7 +992,7 @@ class OlderDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.db.member("1", "10"))["kick_warn_at"], 123.0)
 
     async def test_it_has_the_same_columns_and_indexes_as_a_new_database(self):
-        fresh = db_module.Database(Path(self.folder.name) / "new.db")
+        fresh = db_module.Database(Path(self.folder.name) / "new.db", DB_KEY)
         await fresh.open()
         try:
             for question in ("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'", "SELECT name FROM sqlite_master WHERE type = 'table'"):
@@ -1102,34 +1102,41 @@ class ConcurrentAppeals(FlowBase):
 class DeletedValuesLeaveTheLog(DatabaseCase):
     MARKER = "MARKER-VALUE-" + "x" * 40
 
-    def on_disk(self):
-        return b"".join(path.read_bytes() for path in Path(self.folder.name).glob("t.db*")).find(self.MARKER.encode()) >= 0
+    def log_size(self):
+        """The bytes in the write-ahead log. What's deleted stays in the log until a checkpoint empties it, and the log is encrypted either way."""
+        log = Path(self.folder.name) / "t.db-wal"
+        return log.stat().st_size if log.exists() else 0
 
-    async def test_removing_a_lookup_key_clears_every_file(self):
+    async def test_removing_a_lookup_key_empties_the_log(self):
         await self.db.set_lookup_key("1", self.MARKER)
-        self.assertTrue(self.on_disk())
+        self.assertGreater(self.log_size(), 0)
         await self.db.set_lookup_key("1", None)
-        self.assertFalse(self.on_disk())
+        self.assertEqual(self.log_size(), 0)
 
-    async def test_forgetting_a_server_clears_every_file(self):
+    async def test_forgetting_a_server_empties_the_log(self):
         await self.db.save_settings("1", {"privacy": {}})
         await self.db.touch_member("1", "10", username=self.MARKER)
+        self.assertGreater(self.log_size(), 0)
         await self.db.forget_guild("1")
-        self.assertFalse(self.on_disk())
+        self.assertEqual(self.log_size(), 0)
 
-    async def test_the_hourly_purge_clears_the_log(self):
+    async def test_the_hourly_purge_empties_the_log(self):
         await self.db.touch_member("1", "10", username=self.MARKER)
         await self.db.run("DELETE FROM members")
-        self.assertTrue(self.on_disk(), "a plain delete leaves the value in the log, which is why the purge checkpoints")
+        self.assertGreater(self.log_size(), 0, "a plain delete leaves the old value in the log, which is why the purge checkpoints")
         await self.db.purge_expired({})
-        self.assertFalse(self.on_disk())
+        self.assertEqual(self.log_size(), 0)
 
     async def test_a_departed_server_is_cleared_too(self):
         await self.db.save_settings("1", settings.defaults())
         await self.db.touch_member("1", "10", username=self.MARKER)
         await self.db.set_guild_field("1", "left_at", 1)
         await self.db.purge_expired({})
-        self.assertFalse(self.on_disk())
+        self.assertEqual(self.log_size(), 0)
+        self.assertIsNone(await self.db.member("1", "10"))
+
+    async def test_deleted_pages_are_zeroed_before_they_are_encrypted(self):
+        self.assertEqual(await self.db.scalar("PRAGMA secure_delete"), 1)
 
     async def test_the_log_has_a_size_limit(self):
         self.assertEqual(await self.db.scalar("PRAGMA journal_size_limit"), db_module.WAL_LIMIT_BYTES)

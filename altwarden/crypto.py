@@ -105,6 +105,10 @@ class Keyring:
     def derive(self, purpose: str, scope: str = "") -> bytes:
         return hkdf_sha256(self.master, info=f"altwarden/{purpose}/{scope}".encode())
 
+    def database_key(self) -> str:
+        """The key for the database file, as the 64 hex digits SQLCipher takes for a raw key. Nothing else uses this purpose, and it's never stored."""
+        return self.derive("database").hex()
+
     def digest(self, guild_id: int, kind: str, value: str) -> str:
         """The stored stand-in for one identifier in one server."""
         key = self.derive("identifier", f"{guild_id}/{kind}")

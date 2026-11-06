@@ -17,6 +17,7 @@
     <h2>The short version</h2>
     <ul>
       <li>Your IP address, email, cookie and browser fingerprint are never stored in readable form.</li>
+      <li>The database, its log and its nightly backups are encrypted, so a copy of any of them shows nothing without the master key.</li>
       <li>Your Discord sign-in is revoked seconds after it's used.</li>
       <li>The verification page has no ads, analytics or other outside scripts.</li>
       <li>The hashes in one server can't be connected to the hashes in another. Your Discord ID is stored as it is, so staff can see who verified.</li>
@@ -38,7 +39,7 @@
 
     <h2>What a keyed hash means</h2>
     <p>A keyed hash is a one-way scramble made with a secret key. AltWarden can tell whether two values match, but the hash can't be turned back into the address or fingerprint without that key. Every server has its own derived key, so the same person produces unrelated hashes in two servers. The key isn't stored in the database, so a copy of the database alone can't reverse them.</p>
-    <p>That copy would still show Discord IDs, names, attempt results and appeal text. A server's webhook secrets and any proxycheck.io key are encrypted under the same master key, so a copy alone reveals none of them, and a copy with the key reveals them all.</p>
+    <p>The whole database is encrypted as well, under a key derived from the master key, so a copy of it shows no Discord IDs, names, attempt results or appeal text. A server's webhook secrets and any proxycheck.io key are encrypted a second time, so a copy alone reveals none of them.</p>
 
     <h2>How long things are kept</h2>
     <table>

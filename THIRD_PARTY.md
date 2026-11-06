@@ -22,6 +22,7 @@ Pinned in `requirements.lock`, and not part of this repository.
 | [discord.py](https://github.com/Rapptz/discord.py) | 2.7.1 | MIT |
 | [aiohttp](https://github.com/aio-libs/aiohttp) | 3.14.5 | Apache 2.0 and MIT |
 | [aiosqlite](https://github.com/omnilib/aiosqlite) | 0.22.1 | MIT |
+| [sqlcipher3-wheels](https://github.com/laggykiller/sqlcipher3) | 0.5.7 | zlib/libpng. Its wheels bundle [SQLCipher](https://github.com/sqlcipher/sqlcipher) 4.12.0, BSD 3-Clause, and [OpenSSL](https://github.com/openssl/openssl) 3.6.0, Apache 2.0 |
 | [cryptography](https://github.com/pyca/cryptography) | 50.0.0 | Apache 2.0 or BSD 3-Clause |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | 1.2.4 | BSD 3-Clause |
 | [yarl](https://github.com/aio-libs/yarl) | 1.25.1 | Apache 2.0 |

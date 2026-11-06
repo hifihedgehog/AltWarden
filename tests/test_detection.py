@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from altwarden import altmatch, catalog, db, engine, netintel, settings, signals
 from altwarden.netintel import NetInfo, external_lookup
+from fakes import DB_KEY
 
 CHROME_WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 FIREFOX_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0"
@@ -305,7 +306,7 @@ class AltMatching(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.db = db.Database(os.path.join(self.dir.name, "t.db"))
+        self.db = db.Database(os.path.join(self.dir.name, "t.db"), DB_KEY)
         await self.db.open()
         self.future = time.time() + 1000
 
