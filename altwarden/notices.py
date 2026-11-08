@@ -78,16 +78,46 @@ def tries_left(count: int) -> str:
     return f"{count} {'try' if count == 1 else 'tries'} left."
 
 
+def fixes_text(fixes: list[dict], room: int = DESCRIPTION_LIMIT) -> str:
+    """Each fix as Discord text, in as many as fit in the room left. Steps done in Discord carry every device, because the
+    member may read this on another device than the one Discord's settings are on."""
+    text = ""
+    for fix in fixes:
+        ways = [way for way in fix["ways"] if way["in_dm"]] if fix["every_way"] else fix["ways"][:1]
+        lines = [f"**{fix['title']}**"]
+        for way in ways:
+            if len(ways) > 1:
+                lines.append(f"*{way['heading']}*")
+            lines += [f"{number}. {step}" for number, step in enumerate(way["steps"], 1)]
+        part = "\n\n" + "\n".join(lines)
+        if len(text) + len(part) > room:
+            break
+        text += part
+    return text
+
+
+def _when_done(channel_id: str | None) -> str:
+    where = f"<#{channel_id}>" if channel_id else "the server's verification channel"
+    return f"When you're done, go to {where} and press **Verify** to try again."
+
+
 def failed_notice(guild_name: str, reason: str, text: str, action: str, public_url: str,
-                  appeal_url: str | None, show_reason: bool, retry_on: float | None = None, *, attempts_left: int | None = None, instant: bool = False) -> Notice:
+                  appeal_url: str | None, show_reason: bool, retry_on: float | None = None, *, attempts_left: int | None = None, instant: bool = False,
+                  fixes: list[dict] | None = None, retry: bool = False, channel_id: str | None = None) -> Notice:
     what = {"kick": "You were removed from the server.", "ban": "You were banned from the server."}.get(action, "")
     body = (text if show_reason else "You didn't pass this server's checks.") + (f"\n\n{what}" if what else "")
     if show_reason and retry_on:
         body += f"\n\nYou can try again after <t:{int(retry_on)}:f>."
     if attempts_left:
         body += f"\n\n{tries_left(attempts_left)}"
+    ending = ""
     if instant and action == "deny" and (reason != "max_attempts" or not show_reason):  # Instant mode only checks on a join, so there's no button to press. Rejoining doesn't bring attempts back.
-        body += "\n\nLeave the server and rejoin to try again."
+        ending = "\n\nLeave the server and rejoin to try again."
+    elif show_reason and fixes and retry and any(fix["after"] for fix in fixes):
+        ending = f"\n\n{_when_done(channel_id)}"
+    if show_reason and fixes:
+        body += fixes_text(fixes, room=DESCRIPTION_LIMIT - len(body) - len(ending))
+    body += ending
     # With reasons hidden, a page named after the check would give the reason away.
     slug = HELP_SLUG.get(reason, "verification") if show_reason else "verification"
     buttons = [Button("What to do", url=f"{public_url}/help/{slug}", style="link")]

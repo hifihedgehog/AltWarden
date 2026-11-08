@@ -46,6 +46,7 @@ The [security page](altwarden/web/static/security.html) lists how that works.
 | Alt matches | Any one match on connection, browser cookie or fingerprint, and your chosen action applies |
 | Alts of banned accounts | Their own action |
 | Raid mode | Automatic, from the join rate |
+| When a member fails | Every check that stopped them, each with steps for their own device and browser, on the page and by DM |
 | Appeals | From the result page, decided with buttons in Discord |
 | Settings changes | Logged with before and after values |
 | Data deletion | Self-service |

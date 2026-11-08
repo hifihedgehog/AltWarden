@@ -18,7 +18,8 @@ from pathlib import Path
 
 from aiohttp import web
 
-from ..catalog import CHECK_IDS, WEB
+from .. import fixes
+from ..catalog import CHECK_IDS, HELP_SLUG, WEB
 from ..crypto import Keyring, network_of, new_token, pow_solved, token_hash
 from ..netintel import check_lookup_key
 from ..ports import DISCORD_BUSY, DiscordUnavailable
@@ -194,6 +195,22 @@ def page(name: str, csp: str | None = None):
     return handler
 
 
+# Each help page the fixes table answers, by the address its page uses.
+HELP_REASONS = {HELP_SLUG[reason]: reason for reason in fixes.FIXES}
+HELP_CACHE = {"Cache-Control": "public, max-age=300"}
+
+
+async def help_index(request: web.Request) -> web.Response:
+    return web.json_response({"pages": [{"slug": HELP_SLUG[reason], "title": fix.title} for reason, fix in fixes.FIXES.items()]}, headers=HELP_CACHE)
+
+
+async def help_page(request: web.Request) -> web.Response:
+    reason = HELP_REASONS.get(request.match_info["slug"])
+    if reason is None:
+        return json_error(404, "That request wasn't valid.")
+    return web.json_response(fixes.page(reason), headers=HELP_CACHE)
+
+
 def limited(request: web.Request, bucket: str, *, per_minute: int, burst: int) -> bool:
     """Whether this address has used up a bucket. An IPv6 address also counts toward a larger bucket for its /48.
 
@@ -351,6 +368,7 @@ async def verify_state(request: web.Request) -> web.Response:
         "guild": {"id": row["guild_id"], "name": guild.name if guild else "this server", "icon": guild.icon if guild else None},
         "expires_at": row["expires_at"],
         "bypass": bool(row["bypass"]),
+        "fixes": row["fixes"] if step == "check" else [],
     }
     if step != "done":
         state["member"] = {"name": member.username if member else "", "avatar": member.avatar if member else None}
@@ -772,6 +790,8 @@ def build_app(service: Service, keys: Keyring, oauth: DiscordOAuth, *, trust_pro
     add("/healthz", healthz)
     add("/.well-known/security.txt", security_txt)
     add("/api/verify/{token}", verify_state)
+    add("/api/help", help_index)
+    add("/api/help/{slug}", help_page)
     app.router.add_post("/api/verify/{token}/challenge", verify_challenge)
     app.router.add_post("/api/verify/{token}/submit", verify_submit)
     app.router.add_post("/api/verify/{token}/help", verify_help)

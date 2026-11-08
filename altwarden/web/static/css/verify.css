@@ -27,4 +27,14 @@ body { min-height: 100vh; display: flex; flex-direction: column; }
 .privacy-line a { color: var(--text-soft); text-decoration: underline; }
 .verify-note { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-small); background: var(--bg-sunken); color: var(--text-soft); font-size: .92rem; }
 .page-foot { padding: 14px; text-align: center; color: var(--text-faint); font-size: .85rem; }
+.fix { margin-top: 14px; padding: 14px 16px; border-radius: var(--radius-small); background: var(--bg-sunken); text-align: left; }
+.fix h2 { font-size: 1.02rem; margin: 0 0 4px; }
+.fix h3 { font-size: .92rem; margin: 10px 0 0; color: var(--text-soft); }
+.verify-card .fix-why { margin: 0; font-size: .9rem; }
+.fix-steps { margin: 6px 0 0; padding-left: 1.4em; }
+.fix-steps li { margin: 5px 0; color: var(--text); }
+.fix-other { margin-top: 8px; }
+.fix-other summary { cursor: pointer; color: var(--text-soft); font-size: .92rem; }
+.fix-other[open] summary { margin-bottom: 2px; }
+.fix-intro, .fix-after { margin-top: 14px; }
 .page-foot a { color: var(--text-soft); }

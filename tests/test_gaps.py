@@ -173,10 +173,11 @@ class Pages(Base):
 
     async def test_every_failure_links_to_a_help_page_that_exists(self):
         from altwarden.catalog import HELP_SLUG
-        from altwarden.web.app import STATIC
+        from altwarden.web.app import HELP_REASONS, STATIC
         source = (STATIC / "js" / "help.js").read_text(encoding="utf-8")
         for slug in set(HELP_SLUG.values()) | {"link-expired", "security-check", "connection-check", "role-problem", "left-server", "not-set-up", "verification"}:
-            self.assertTrue(f'"{slug}":' in source or f"{slug}:" in source, slug)
+            # A check with a fix gets its page from the server, so help.js doesn't hold it.
+            self.assertTrue(f'"{slug}":' in source or f"{slug}:" in source or slug in HELP_REASONS, slug)
 
 
 if __name__ == "__main__":

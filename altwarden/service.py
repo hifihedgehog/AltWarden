@@ -15,7 +15,7 @@ from collections import OrderedDict, defaultdict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from . import altmatch, engine, health, notices, settings as settings_module, signals
+from . import altmatch, engine, fixes, health, notices, settings as settings_module, signals
 from .catalog import BAN, BY_ID, CHECK_IDS, DENY, FAILURE_TEXT, HELP_SLUG, INSTANT, KICK, SEVERITY, WATCH, WEB
 from .crypto import Keyring, is_sealed, network_of, new_token, token_hash, wide_network_of
 from .db import Database
@@ -73,12 +73,14 @@ class Result:
     staff_help: bool = False
     attempts_left: int | None = None  # with an attempt limit on and not yet reached
     quiet: bool = False  # past a limit: nobody was told anything, so a member with no page to read needs a DM
+    fixes: list | None = None  # what to do about each check that stopped them, from fixes.for_findings
 
     def as_dict(self) -> dict:
         return {"status": self.status, "title": self.title, "message": self.message, "reason": self.reason,
                 "action": self.action, "help": self.help_slug, "retry": self.retry, "appeal": self.appeal,
                 "seconds_left": round(self.seconds_left), "template": self.template, "args": self.args,
-                "retry_on": self.retry_on, "staff_help": self.staff_help, "attempts_left": self.attempts_left}
+                "retry_on": self.retry_on, "staff_help": self.staff_help, "attempts_left": self.attempts_left,
+                "fixes": self.fixes or []}
 
     def discord_text(self) -> str:
         """The message for a reply in Discord, where timestamps show in each reader's own time zone."""
@@ -89,6 +91,8 @@ class Result:
             text += f"\n\nYou can try again after <t:{int(self.retry_on)}:f>."
         if self.attempts_left:
             text += f"\n\n{notices.tries_left(self.attempts_left)}"
+        if self.fixes:
+            text += notices.fixes_text(self.fixes, room=notices.DESCRIPTION_LIMIT - len(text))
         return text
 
 
@@ -514,6 +518,7 @@ class Service:
             return None
         row["bypass"] = json.loads(row["bypass"])
         row["account"] = json.loads(row["account"]) if row["account"] else None
+        row["fixes"] = json.loads(row["fixes"]) if row.get("fixes") else []
         return row
 
     # --- the three ways to verify -----------------------------------------------------------
@@ -745,7 +750,7 @@ class Service:
                 result = await self._quiet_failure(guild_id, user_id, rules, past)
             else:
                 await self._store_digests(guild_id, user_id, {**digests, **profile}, privacy)
-                result = await self._conclude(guild_id, rules, account, decision, mode=WEB, session=row, started=row["opened_at"], notes=notes)
+                result = await self._conclude(guild_id, rules, account, decision, mode=WEB, session=row, started=row["opened_at"], notes=notes, browser=verdict)
         if past is not None:
             await self._finish_session(token, "signed_in", result)
             return result
@@ -785,8 +790,11 @@ class Service:
     async def _finish_session(self, token: str, state: str, result: Result) -> None:
         # What the sign-in read stays only while a retry can use it. finished_at marks a result the member has seen, which is what
         # makes a reload wait to be asked. A server problem hasn't used anything up, so that can run again by itself.
-        await self.db.run("UPDATE sessions SET state = ?, finished_at = CASE WHEN ? THEN ? ELSE finished_at END, account = CASE WHEN ? = 'signed_in' THEN account END WHERE token_hash = ?",
-                          (state, result.status in ("failed", "verified", "cooldown"), time.time(), state, token_hash(token)))
+        # The last attempt's fixes stay too, so a page that reloads can still show them. Only a pass or a new failure replaces them.
+        await self.db.run("UPDATE sessions SET state = ?, finished_at = CASE WHEN ? THEN ? ELSE finished_at END, account = CASE WHEN ? = 'signed_in' THEN account END, "
+                          "fixes = CASE WHEN ? THEN ? ELSE fixes END WHERE token_hash = ?",
+                          (state, result.status in ("failed", "verified", "cooldown"), time.time(), state,
+                           result.status in ("failed", "verified"), json.dumps(result.fixes) if result.fixes else None, token_hash(token)))
 
     async def _outside_lookup(self, guild_id: str, user_id: str, ip: str, net: NetInfo, rules: dict, bypass: frozenset) -> str | None:
         """Ask proxycheck.io about a member's connection if the answer could matter, and write it onto `net`.
@@ -904,7 +912,8 @@ class Service:
     # --- outcomes ---------------------------------------------------------------------------
 
     async def _conclude(self, guild_id: str, rules: dict, account: engine.Account, decision: engine.Decision, *, mode: str,
-                        session: dict | None, started: float | None, notes: dict | None = None) -> Result:
+                        session: dict | None, started: float | None, notes: dict | None = None,
+                        browser: signals.BrowserVerdict | None = None) -> Result:
         if decision.cooldown_left > 0:
             return Result("cooldown", "Please wait", FAILURE_TEXT["cooldown"], reason="cooldown",
                           help_slug=HELP_SLUG["cooldown"], seconds_left=decision.cooldown_left, retry=True)
@@ -987,9 +996,15 @@ class Service:
         appeals_on = rules["appeals"]["enabled"]
         appeal_url = f"{self.public_url}/appeal/{guild_id}" if appeals_on else None
         text = primary.message
+        # What to do about every check that stopped them, with this device's steps first. A ban leaves nothing to fix, and
+        # with reasons hidden the steps would name the check.
+        found_fixes = (fixes.for_findings(decision.enforced, system=browser.os if browser else None, browser=browser.browser if browser else None)
+                       if rules["core"]["show_reason"] and action != BAN else [])
+        can_retry = action == DENY and primary.check_id not in NO_RETRY_CHECKS
         # This has to go first, because Discord refuses a DM once the two share no server. So it can claim a removal that then fails.
         delivered = await self.port.dm(user_id, notices.failed_notice(guild_name, primary.reason, text, action, self.public_url, appeal_url,
-                                                                      rules["core"]["show_reason"], retry_on, attempts_left=attempts_left, instant=mode == INSTANT))
+                                                                      rules["core"]["show_reason"], retry_on, attempts_left=attempts_left, instant=mode == INSTANT,
+                                                                      fixes=found_fixes, retry=can_retry, channel_id=rules["core"]["channel"]))
         took = {DENY: "Denied", KICK: "Kicked", BAN: "Banned"}[action]
         if delivered is not True:
             took += ", couldn't tell them by DM"
@@ -1015,7 +1030,7 @@ class Service:
                                                                       bypassed=bypassed, mode=mode, guild_name=guild_name))
         await self._emit(guild_id, "member.failed", {"user_id": user_id, "check": primary.check_id, "action": done,
                                                      "checks": modules})
-        return _failed_result(rules, primary, done, retry_on=retry_on, attempts_left=attempts_left)
+        return _failed_result(rules, primary, done, retry_on=retry_on, attempts_left=attempts_left, fixes=found_fixes)
 
     async def _grant(self, guild_id: str, rules: dict, user_id: str, reason: str) -> str | None:
         core = rules["core"]
@@ -1904,7 +1919,8 @@ def _past_deny_limit(decision: engine.Decision, record: dict) -> engine.Finding 
     return next((finding for finding in decision.findings if finding.check_id == "max_attempts" and finding.action == DENY), None)
 
 
-def _failed_result(rules: dict, primary: engine.Finding, done: str, *, retry_on: float | None = None, attempts_left: int | None = None) -> Result:
+def _failed_result(rules: dict, primary: engine.Finding, done: str, *, retry_on: float | None = None, attempts_left: int | None = None,
+                   fixes: list | None = None) -> Result:
     """What the member sees after a failure. `done` is what really happened, because the page mustn't say someone was removed when they're still here."""
     show = rules["core"]["show_reason"]
     desk = rules["core"]["help_desk"]
@@ -1916,7 +1932,8 @@ def _failed_result(rules: dict, primary: engine.Finding, done: str, *, retry_on:
                   appeal=rules["appeals"]["enabled"], template=FAILURE_TEXT[primary.reason] if show else None,
                   args=primary.text_args if show else None, retry_on=retry_on if show else None,
                   # After a kick or a ban there's no member to open a thread for.
-                  staff_help=done == DENY and desk["enabled"] and desk["redirect"], attempts_left=attempts_left)
+                  staff_help=done == DENY and desk["enabled"] and desk["redirect"], attempts_left=attempts_left,
+                  fixes=(fixes or None) if show and done != BAN else None)
 
 
 def _without_person(value, user_id: str):

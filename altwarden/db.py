@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     account TEXT,
     nonce TEXT,
     pow_salt TEXT,
-    pow_bits INTEGER NOT NULL DEFAULT 0
+    pow_bits INTEGER NOT NULL DEFAULT 0,
+    fixes TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_member ON sessions (guild_id, user_id);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);

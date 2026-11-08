@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from altwarden.catalog import FAILURE_TEXT
+from altwarden.fixes import strings as fix_strings
 from altwarden.ports import DISCORD_BUSY
 
 JS = ROOT / "altwarden" / "web" / "static" / "js"
@@ -35,6 +36,7 @@ def main() -> None:
     found += [value for value in STRING.findall(block) if " " in value]
     found += KINDS.findall((JS / "mydata.js").read_text(encoding="utf-8"))
     found += list(FAILURE_TEXT.values())
+    found += fix_strings()  # each check's fix, which the server sends for the page to show
     found += ["Please sign in again", "This server's rules changed, so Discord needs to confirm your account again.",  # sent by the server
               "Almost there", "You passed, but the server's roles need fixing. Staff have been told.",
               "You passed, but the server's roles need fixing. Please tell the server's staff.",

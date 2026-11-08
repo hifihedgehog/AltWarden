@@ -57,6 +57,8 @@
     </table>
     <p>Every enabled check runs on an attempt, and the strongest action wins. A failure set to Deny can't hide a match set to Ban. Two things end an attempt before that: a cooldown still running, and an attempt limit already used up with its action on Deny. Neither sends a DM or a log line, or records an attempt. In Instant mode there is no page to show the answer on, so each rejoin past the limit gets one DM.</p>
 
+    <p>A member who fails is shown every check that stopped them, each with the steps to fix it on their own device and browser. The steps cover setting up two-factor login with a passkey, turning off a VPN or iCloud Private Relay, and switching Brave Shields down for the page. The failure DM carries the same steps. A server that hides reasons shows none of them.</p>
+
     <h2>Rules</h2>
     <p>Every rule is optional. Rules that can't run in the current mode stay saved, and the Rules page marks them as paused.</p>
     <table>

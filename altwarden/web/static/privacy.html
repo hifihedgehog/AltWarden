@@ -29,6 +29,7 @@
       <tr><th>Data</th><th>What happens to it</th></tr>
       <tr><td>Discord ID, username, profile picture</td><td>Stored, so staff can see who verified.</td></tr>
       <tr><td>Whether two-factor login is on</td><td>Kept with your link while you can still retry. It goes when your attempt finishes, and otherwise when the link ends.</td></tr>
+      <tr><td>The steps from your last attempt</td><td>Kept with your link, so the page can show them again if it reloads. They go when the link ends.</td></tr>
       <tr><td>Your email address</td><td>Requested when the server has the throwaway email check on, and every preset turns it on. The domain is compared with a list, then the address is dropped. It's never written down.</td></tr>
       <tr><td>IP address</td><td>Compared in memory with lists of VPNs, data centers and countries. A keyed hash is stored for alt matching. The address isn't stored.</td></tr>
       <tr><td>Browser and device details</td><td>Compared to find spoofing, automation and virtual machines. Only the result is stored, as labels such as "private window". A browser identifier and a device value are stored as keyed hashes.</td></tr>

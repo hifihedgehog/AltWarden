@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from altwarden import altmatch, catalog, db as db_module, netintel, service as service_module, settings
+from altwarden import altmatch, catalog, db as db_module, fixes, netintel, service as service_module, settings
 from altwarden.bot import client as client_module
 from altwarden.web import app as app_module
 from fakes import GUILD, OLD_USER
@@ -421,8 +421,16 @@ class Translations(unittest.TestCase):
 
     def test_every_help_slug_the_server_sends_has_a_page(self):
         source = read("js/help.js")
+        served = {catalog.HELP_SLUG[reason] for reason in fixes.FIXES}
         for slug in catalog.HELP_SLUG.values():
-            self.assertTrue(f'"{slug}":' in source or f"\n  {slug}:" in source, slug)
+            self.assertTrue(f'"{slug}":' in source or f"\n  {slug}:" in source or slug in served, slug)
+
+    def test_help_js_holds_no_page_the_server_serves(self):
+        source = read("js/help.js").replace("\r\n", "\n")
+        for reason in fixes.FIXES:
+            slug = catalog.HELP_SLUG[reason]
+            self.assertNotIn(f'\n  "{slug}": [', source, slug)
+            self.assertNotIn(f"\n  {slug}: [", source, slug)
 
 
 class WhatThePagesRead(FlowBase):

@@ -83,15 +83,17 @@ function showSignIn(state, again) {
   );
 }
 
-// A reload mustn't spend an attempt, so after a failure the page waits to be asked.
+// A reload mustn't spend an attempt, so after a failure the page waits to be asked. The last attempt's fixes come back with it.
 function showTried(state) {
+  const fixes = Array.isArray(state.fixes) ? state.fixes : [];
   render(
     header(state),
     el("h1", { text: t("You weren't verified") }),
     el("p", { text: t("Your last attempt didn't pass. Press Try again when you're ready.") }),
+    ...fixSection(fixes, true),
     el("div", { class: "verify-actions" },
       el("a", { class: "button primary", href: retryUrl(), text: t("Try again") }),
-      el("a", { class: "button", href: "/help/verification", text: t("What to do") }),
+      el("a", { class: "button", href: "/help/verification", text: fixes.length ? t("Get help") : t("What to do") }),
       state.staff_help ? talkToStaff() : null,
       state.appeal ? el("a", { class: "button", href: `/appeal/${state.guild.id}`, text: t("Appeal to staff") }) : null),
   );
@@ -99,6 +101,32 @@ function showTried(state) {
 
 function retryUrl() {
   return `${location.pathname}?again=1`;
+}
+
+function stepList(steps) {
+  const list = el("ol", { class: "fix-steps" });
+  for (const step of steps) list.append(el("li", { text: t(step) }));
+  return list;
+}
+
+// What to do about each check that stopped an attempt. The steps for this device come first, and the others wait behind their headings.
+function fixSection(fixes, retry) {
+  const nodes = [];
+  if (fixes.length > 1) nodes.push(el("p", { class: "fix-intro", text: t("{count} things stopped this attempt. Fix each one, then try again.", { count: fixes.length }) }));
+  for (const fix of fixes) {
+    const [first, ...others] = fix.ways;
+    const block = el("section", { class: "fix" }, el("h2", { text: t(fix.title) }), el("p", { class: "fix-why", text: t(fix.why) }));
+    if (others.length) block.append(el("h3", { text: t(first.heading) }));
+    block.append(stepList(first.steps));
+    for (const way of others) block.append(el("details", { class: "fix-other" }, el("summary", { text: t(way.heading) }), stepList(way.steps)));
+    nodes.push(block);
+  }
+  if (retry && fixes.some((fix) => fix.after)) {
+    nodes.push(el("p", { class: "fix-after", text: fixes.some((fix) => fix.after === "signin")
+      ? t("When you're done, press Try again and sign in with Discord again, so this server can see the change.")
+      : t("When you're done, press Try again.") }));
+  }
+  return nodes;
 }
 
 function stepRow(label) {
@@ -215,9 +243,10 @@ function showResult(state, result) {
     showCooldown(state, result.seconds_left);
     return;
   }
+  const fixes = Array.isArray(result.fixes) ? result.fixes : [];
   const actions = el("div", { class: "verify-actions" });
   if (result.retry) actions.append(el("a", { class: "button primary", href: retryUrl(), text: t("Try again") }));
-  if (result.help) actions.append(el("a", { class: "button", href: `/help/${result.help}`, text: t("What to do") }));
+  if (result.help) actions.append(el("a", { class: "button", href: `/help/${result.help}`, text: fixes.length ? t("Get help") : t("What to do") }));
   if (result.staff_help || (result.status === "problem" && state.staff_help && !NO_STAFF_HELP.has(result.reason))) actions.append(talkToStaff());
   if (result.appeal) actions.append(el("a", { class: "button", href: `/appeal/${state.guild.id}`, text: t("Appeal to staff") }));
   const removed = { kick: t("You were removed from the server."), ban: t("You were banned from the server.") }[result.action];
@@ -230,6 +259,7 @@ function showResult(state, result) {
     Number.isInteger(left) && left > 0 ? el("p", { text: left === 1 ? t("1 try left.") : t("{count} tries left.", { count: left }) }) : null,
     result.retry_on ? el("p", { text: t("You can try again after {date}.", { date: DATE_FORMAT.format(new Date(result.retry_on * 1000)) }) }) : null,
     removed ? el("div", { class: "verify-note", text: removed }) : null,
+    ...fixSection(fixes, result.retry),
     actions,
   );
 }

@@ -791,6 +791,56 @@ def scenario(run):
 
 
 @scenario
+async def member_pages_show_each_fix(s):
+    """A failed attempt shows what to do about each check, a reload keeps it, and the help pages read their steps from the server."""
+    original = json.loads(json.dumps(await s.service.get_settings(GUILD)))
+    rules = json.loads(json.dumps(original))
+    rules["checks"]["devtools"].update(enabled=True, action="deny")  # this harness counts as a debugger on the console
+    rules["checks"]["vm"].update(enabled=True, action="deny")  # headless Chrome with no GPU draws in software
+    await s.service.save_settings(GUILD, rules)
+    s.port.add_member(OTHER_USER, username="member_two")
+    url, _ = await s.service.new_link(GUILD, OTHER_USER, rules)
+    await s.service.attach_account(url.rsplit("/", 1)[1], {"id": OTHER_USER, "username": "member_two", "avatar": "abc", "mfa": True,
+                                                           "email_verified": True, "email_disposable": False})
+    try:
+        await s.cdp.open(url, wait=0.3)
+        await s.need("the attempt fails", "document.querySelector('.result-mark.bad')", 40)
+        titles = await s.ev("[...document.querySelectorAll('.fix h2')].map((node) => node.textContent)")
+        s.check("the devtools fix is on the page", "Developer tools are open" in titles, titles)
+        s.check("each fix lists its steps", await s.ev("[...document.querySelectorAll('.fix')].every((node) => node.querySelectorAll('.fix-steps li').length > 0)"))
+        if len(titles) > 1:
+            intro = await s.ev("document.querySelector('.fix-intro')?.textContent")
+            s.check("several fixes say how many", (intro or "").startswith(f"{len(titles)} things"), [intro, titles])
+            s.check("the other browsers wait behind a heading", await s.ev("document.querySelectorAll('.fix details summary').length > 0"))
+        s.check("the help button reads Get help", await s.ev("[...document.querySelectorAll('.verify-actions a')].some((node) => node.textContent === 'Get help')"))
+        s.check("it says what to press next", await s.ev("document.querySelector('.fix-after')?.textContent.includes('Try again')"))
+        await s.cdp.call("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
+        await s.cdp.open(url, wait=0.3)
+        await s.need("a reload waits to be asked", "document.getElementById('card')?.innerText.includes('last attempt')", 10)
+        again = await s.ev("[...document.querySelectorAll('.fix h2')].map((node) => node.textContent)")
+        s.check("the reload keeps the fixes", again == titles, again)
+        s.check("nothing overflows at phone width", await s.ev("document.documentElement.scrollWidth <= 391"))
+    finally:
+        await s.cdp.call("Emulation.clearDeviceMetricsOverride")
+        await s.service.save_settings(GUILD, original)
+    await s.cdp.open(f"{PUBLIC}/help/mfa", wait=0.3)
+    await s.need("the two-factor page loads from the server", "document.querySelector('h1')?.textContent === 'Turn on two-factor login in Discord'", 10)
+    s.check("it shows every way", await s.ev("document.querySelectorAll('main h2').length") == 3)
+    s.check("it names the passkey steps", await s.ev("document.body.innerText.includes('Tap Account, then Security Keys, then Add.')"))
+    await s.cdp.open(f"{PUBLIC}/help/vpn", wait=0.3)
+    await s.need("the VPN page loads from the server", "document.querySelector('h1')?.textContent === 'Turn off your VPN'", 10)
+    s.check("it covers Private Relay", await s.ev("document.body.innerText.includes('Turn Off Until Tomorrow')"))
+    await s.cdp.open(f"{PUBLIC}/help/link-expired", wait=0.3)
+    await s.need("a page help.js holds still loads", "document.querySelector('h1')?.textContent === 'This link has expired'", 10)
+    await s.cdp.open(f"{PUBLIC}/help", wait=0.3)
+    await s.need("the index lists the server's pages", "[...document.querySelectorAll('.help-index a')].some((node) => node.textContent === 'Turn on two-factor login in Discord')", 10)
+    s.check("how to verify is still first", await s.ev("document.querySelector('.help-index a')?.textContent") == "How to verify")
+    s.check("the expired link page is still listed", await s.ev("[...document.querySelectorAll('.help-index a')].some((node) => node.getAttribute('href') === '/help/link-expired')"))
+    await s.cdp.open(f"{PUBLIC}/help/nothing-here", wait=0.3)
+    await s.need("an unknown page shows the index", "document.querySelector('.help-index')", 10)
+
+
+@scenario
 async def a_draft_stays_behind_when_search_opens_another_server(s):
     await s.open()
     await s.switch("cooldown")
