@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS members (
     limit_reached_at REAL,
     limit_held INTEGER NOT NULL DEFAULT 0,
     help_thread_id TEXT,
+    help_reminded_at REAL,
     forget_on_unban INTEGER NOT NULL DEFAULT 0,
     kick_warn_at REAL,
     PRIMARY KEY (guild_id, user_id)
@@ -490,7 +491,7 @@ class Database:
 
     async def update_member(self, guild_id: str, user_id: str, **fields: Any) -> None:
         allowed = {"status", "method", "verified_at", "kick_at", "kick_warn_at", "fails", "last_fail_at", "limit_reached_at",
-                   "help_thread_id", "joined_at", "forget_on_unban", "first_verified_at"}
+                   "help_thread_id", "help_reminded_at", "joined_at", "forget_on_unban", "first_verified_at"}
         if not fields or not set(fields) <= allowed:
             raise ValueError(f"Unknown member fields: {set(fields) - allowed}")
         assignments = ", ".join(f"{name} = ?" for name in fields)

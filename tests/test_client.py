@@ -412,6 +412,23 @@ class Hooks(Client):
         await self.bot.on_message(message)
         self.assertTrue(self.port.did("delete_message"))
 
+    async def test_a_post_in_a_help_thread_asks_for_a_reminder(self):
+        calls = []
+
+        async def remind(guild_id, thread_id, user_id):
+            calls.append((guild_id, thread_id, user_id))
+            return True
+        self.service.remind_in_help_thread = remind
+        thread = SimpleNamespace(id=88888888888888888, parent_id=int(CHANNEL))
+        member = SimpleNamespace(id=int(OTHER_USER), name="member", roles=(), bot=False)
+        post = lambda **extra: SimpleNamespace(**{"guild": SimpleNamespace(id=int(GUILD)), "id": 8, "webhook_id": None, "is_system": lambda: False,
+                                                 "author": member, "channel": thread, **extra})
+        await self.bot.on_message(post())
+        await self.bot.on_message(post(author=SimpleNamespace(id=int(OTHER_USER), name="bot", roles=(), bot=True)))
+        await self.bot.on_message(post(webhook_id=5))
+        await self.bot.on_message(post(channel=SimpleNamespace(id=77777777777777777, parent_id=int(LOG_CHANNEL))))
+        self.assertEqual(calls, [(GUILD, "88888888888888888", OTHER_USER)])
+
     async def test_a_system_message_in_the_trap_is_nobodys_post(self):
         document = await self.service.get_settings(GUILD)
         document["honeypot"].update(enabled=True, channel=LOG_CHANNEL, action="ban")

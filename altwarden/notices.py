@@ -106,6 +106,24 @@ def steps_embed(fixes: list[dict], room: int) -> dict | None:
     return {"title": STEPS_TITLE, "color": TEAL, "description": STEPS_LEAD + text} if text else None
 
 
+def _checklist(fixes: list[dict]) -> str:
+    return "\n".join(f"- {fix['title']}" for fix in fixes)
+
+
+def help_thread_lead(fixes: list[dict], channel_id: str | None) -> str:
+    """The first lines of a help thread, short and plain, so a member who skips the boxes still sees what to fix."""
+    return (f"Your last attempt didn't pass. To get in, you need to:\n{_checklist(fixes)}\n"
+            f"The steps are in the box below. {_when_done(channel_id)}")
+
+
+def help_reminder(user_id: str, fixes: list[dict], channel_id: str | None) -> Notice:
+    """Posted once when a member writes in their help thread after a failure, because many write before they read."""
+    content = (f"<@{user_id}> Staff will see your message. While you wait, your last attempt needs this fixed:\n{_checklist(fixes)}\n"
+               f"The steps are below. {_when_done(channel_id)}")
+    embed = steps_embed(fixes, EMBED_LIMIT)
+    return Notice(content=content[:2000], embeds=[embed] if embed else [], mention_users=[user_id])
+
+
 def _when_done(channel_id: str | None) -> str:
     where = f"<#{channel_id}>" if channel_id else "the server's verification channel"
     return f"When you're done, go to {where} and press **Verify** to try again."

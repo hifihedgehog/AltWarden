@@ -1371,9 +1371,16 @@ class Service:
         desk = document["core"]["help_desk"]
         await self.db.touch_member(guild_id, user_id, username=member.username, avatar=member.avatar)
         record = await self.db.member(guild_id, user_id)
+        # What stopped their last attempt. With reasons hidden, the steps would name the check.
+        found = fixes.every_way(await self._last_failure(guild_id, user_id)) if document["core"]["show_reason"] else []
+        where = " The steps for what stopped you are in it." if found else ""
         if record["help_thread_id"]:
             if await self.port.reopen_thread(record["help_thread_id"], user_id):
-                return record["help_thread_id"], f"Your help thread is <#{record['help_thread_id']}>."
+                if found and (record["help_reminded_at"] or 0) < (record["last_fail_at"] or 0):
+                    # The pinned steps can be for an older attempt, so the current ones go at the bottom, where the member will type.
+                    await self.port.send(record["help_thread_id"], notices.help_reminder(user_id, found, document["core"]["channel"]), guild_id=guild_id)
+                    await self.db.update_member(guild_id, user_id, help_reminded_at=time.time())
+                return record["help_thread_id"], f"Your help thread is <#{record['help_thread_id']}>.{where}"
             await self.db.update_member(guild_id, user_id, help_thread_id=None)  # Someone deleted it, so start a new one.
         attempts = await self.db.all(f"SELECT check_id, at FROM attempts WHERE guild_id = ? AND user_id = ? AND {APPEALABLE} ORDER BY at DESC LIMIT 10",
                                      (guild_id, user_id))
@@ -1384,10 +1391,11 @@ class Service:
         # Discord's limit covers every embed in a message, and the server's own text can use nearly all of it.
         records = notices.records_embed(attempts, document["core"]["show_reason"], notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)))
         steps = None
-        if document["core"]["show_reason"]:
-            # The steps for the last attempt go first, so the member sees the obvious answers before asking. Records take their room first.
+        if found:
+            # A short checklist leads, then the steps, so the member sees the obvious answers before asking. Records take their room first.
+            first.content = notices.help_thread_lead(found, document["core"]["channel"]) + (f"\n\n{first.content}" if first.content else "")
             room = notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)) - (notices.embed_size(records) if records else 0)
-            steps = notices.steps_embed(fixes.every_way(await self._last_failure(guild_id, user_id)), room)
+            steps = notices.steps_embed(found, room)
         first.embeds += [embed for embed in (steps, records) if embed]
         first.buttons.extend(notices.help_thread_buttons(user_id))
         thread_id = await self.port.open_help_thread(document["core"]["channel"], member.username or user_id, user_id,
@@ -1396,9 +1404,27 @@ class Service:
             told = await self._log(guild_id, document, ["help_desk"], notices.staff_log(
                 "Help desk can't open threads", "AltWarden is missing a permission in the verification channel.", notices.RED))
             return None, ("The help desk can't open a thread right now. Staff have been told." if told else "The help desk can't open a thread right now. Please tell the server's staff.")
-        await self.db.update_member(guild_id, user_id, help_thread_id=thread_id)
+        # The opening message isn't a reminder. Many members write before they read, so their first post still gets one.
+        await self.db.update_member(guild_id, user_id, help_thread_id=thread_id, help_reminded_at=None)
         await self._log(guild_id, document, ["help_desk"], notices.staff_log("Help thread opened", f"<@{user_id}> opened <#{thread_id}>."))
-        return thread_id, f"Your help thread is <#{thread_id}>."
+        return thread_id, f"Your help thread is <#{thread_id}>.{where}"
+
+    async def remind_in_help_thread(self, guild_id: str, thread_id: str, user_id: str) -> bool:
+        """A member's first post in their own help thread after a failure gets the checklist and the steps again, while staff come."""
+        document = await self.get_settings(guild_id)
+        if document is None or not document["core"]["help_desk"]["enabled"] or not document["core"]["show_reason"]:
+            return False
+        async with self._lock(guild_id, user_id):  # two quick posts get one reminder
+            record = await self.db.member(guild_id, user_id)
+            if record is None or record["help_thread_id"] != thread_id:
+                return False
+            if record["help_reminded_at"] is not None and record["help_reminded_at"] >= (record["last_fail_at"] or 0):
+                return False
+            found = fixes.every_way(await self._last_failure(guild_id, user_id))
+            if not found:
+                return False
+            await self.db.update_member(guild_id, user_id, help_reminded_at=time.time())
+        return await self.port.send(thread_id, notices.help_reminder(user_id, found, document["core"]["channel"]), guild_id=guild_id) is not None
 
     async def _last_failure(self, guild_id: str, user_id: str) -> list:
         """What stopped a member's latest attempt, or nothing if they got in since."""

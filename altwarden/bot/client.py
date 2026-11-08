@@ -318,10 +318,15 @@ class AltWardenBot(discord.Client):
         if message.guild is None or message.author == self.user or message.is_system():
             return  # a pin notice or a join message isn't a post, and it would be blamed on whoever caused it
         settings = await self.service.get_settings(str(message.guild.id))
-        if settings is None or not settings["honeypot"]["enabled"]:
+        if settings is None:
+            return
+        parent = getattr(message.channel, "parent_id", None)
+        # Help threads live under the verification channel, so only a post there is looked up. The text itself is never read.
+        if parent is not None and str(parent) == settings["core"]["channel"] and not message.author.bot and message.webhook_id is None:
+            await self.service.remind_in_help_thread(str(message.guild.id), str(message.channel.id), str(message.author.id))
+        if not settings["honeypot"]["enabled"]:
             return
         trap = settings["honeypot"]["channel"]
-        parent = getattr(message.channel, "parent_id", None)
         if trap not in (str(message.channel.id), str(parent)):
             return
         roles = tuple(str(role.id) for role in getattr(message.author, "roles", ()))

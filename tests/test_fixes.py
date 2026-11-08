@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from altwarden import catalog, engine, fixes, notices
 from altwarden.service import Result
-from fakes import CHANNEL, GUILD, OLD_USER
+from fakes import CHANNEL, GUILD, OLD_USER, STAFF
 from test_detection import clean_report
 from test_flow import Base as FlowBase
 
@@ -239,6 +239,72 @@ class HelpThread(FlowBase):
         for heading in ("*In the Discord app on a phone or tablet*", "*In Discord on a computer*", "*With a code app instead*"):
             self.assertIn(heading, steps)
         self.assertLessEqual(sum(map(notices.embed_size, embeds)), notices.EMBED_LIMIT)
+
+    async def test_the_first_lines_are_a_plain_checklist(self):
+        await self.enable()
+        self.discord.user["mfa_enabled"] = False
+        await self.verify_through()
+        thread, reply = await self.service.open_help(self.port.members[(GUILD, OLD_USER)])
+        content = self.port.threads[-1].content
+        self.assertTrue(content.startswith("Your last attempt didn't pass. To get in, you need to:\n- Turn on two-factor login in Discord\n"))
+        self.assertIn(f"go to <#{CHANNEL}> and press **Verify**", content)
+        self.assertEqual(reply, f"Your help thread is <#{thread}>. The steps for what stopped you are in it.")
+
+    async def failed_with_thread(self):
+        await self.enable()
+        self.discord.user["mfa_enabled"] = False
+        await self.verify_through()
+        thread, _ = await self.service.open_help(self.port.members[(GUILD, OLD_USER)])
+        return thread
+
+    def reminders(self, thread):
+        return [notice for where, notice in self.port.sent if where == thread]
+
+    async def test_the_members_first_post_brings_the_steps_back_once(self):
+        thread = await self.failed_with_thread()
+        self.assertTrue(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+        notice = self.reminders(thread)[0]
+        self.assertTrue(notice.content.startswith(f"<@{OLD_USER}> Staff will see your message."))
+        self.assertIn("- Turn on two-factor login in Discord", notice.content)
+        self.assertEqual(notice.embeds[0]["title"], notices.STEPS_TITLE)
+        self.assertEqual(notice.mention_users, [OLD_USER])
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+        self.assertEqual(len(self.reminders(thread)), 1)
+
+    async def test_a_new_failure_earns_a_new_reminder(self):
+        thread = await self.failed_with_thread()
+        await self.service.remind_in_help_thread(GUILD, thread, OLD_USER)
+        await self.db.run("UPDATE members SET help_reminded_at = help_reminded_at - 60 WHERE user_id = ?", (OLD_USER,))
+        await self.verify_through()
+        self.assertTrue(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+
+    async def test_staff_posts_and_other_threads_get_nothing(self):
+        thread = await self.failed_with_thread()
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, STAFF))
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, "970000000000000123", OLD_USER))
+        self.assertEqual(self.reminders(thread), [])
+
+    async def test_no_reminder_once_the_member_got_in(self):
+        thread = await self.failed_with_thread()
+        await self.db.add_attempt(GUILD, OLD_USER, "passed", mode="web", detail={"findings": []})
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+
+    async def test_no_reminder_with_reasons_hidden(self):
+        thread = await self.failed_with_thread()
+        document = await self.service.get_settings(GUILD)
+        document["core"]["show_reason"] = False
+        await self.service.save_settings(GUILD, document)
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+
+    async def test_reopening_after_a_new_failure_posts_the_current_steps(self):
+        thread = await self.failed_with_thread()
+        await self.service.remind_in_help_thread(GUILD, thread, OLD_USER)
+        await self.db.run("UPDATE members SET help_reminded_at = help_reminded_at - 60 WHERE user_id = ?", (OLD_USER,))
+        await self.verify_through()
+        again, reply = await self.service.open_help(self.port.members[(GUILD, OLD_USER)])
+        self.assertEqual(again, thread)
+        self.assertEqual(len(self.reminders(thread)), 2)
+        self.assertIn("The steps for what stopped you are in it.", reply)
 
     async def test_hidden_reasons_give_no_steps(self):
         await self.enable(show_reason=False)
