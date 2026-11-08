@@ -96,6 +96,16 @@ def fixes_text(fixes: list[dict], room: int = DESCRIPTION_LIMIT) -> str:
     return text
 
 
+STEPS_TITLE = "Try these first"
+STEPS_LEAD = "These are the steps for what stopped your last attempt. If you've done them and it still fails, say what happened when you tried."
+
+
+def steps_embed(fixes: list[dict], room: int) -> dict | None:
+    """The steps for a help thread, in the room left in its first message, so the obvious answers are there before anyone asks."""
+    text = fixes_text(fixes, room=min(DESCRIPTION_LIMIT, room - len(STEPS_TITLE)) - len(STEPS_LEAD))
+    return {"title": STEPS_TITLE, "color": TEAL, "description": STEPS_LEAD + text} if text else None
+
+
 def _when_done(channel_id: str | None) -> str:
     where = f"<#{channel_id}>" if channel_id else "the server's verification channel"
     return f"When you're done, go to {where} and press **Verify** to try again."

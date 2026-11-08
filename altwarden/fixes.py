@@ -315,6 +315,21 @@ def for_findings(findings: list, *, system: str | None = None, browser: str | No
     return fixes
 
 
+def every_way(findings: list) -> list[dict]:
+    """The fixes for an earlier attempt with every way that answers its signs, for a place that doesn't know the member's device."""
+    found = []
+    for finding in findings:
+        fix = FIXES.get(finding.reason)
+        if fix is None:
+            continue
+        ways = _relevant(fix, _signs(finding.detail))
+        titles = {way.title for way in ways}
+        title = titles.pop() if len(titles) == 1 else None  # each way names the same thing, as both of Brave's do
+        found.append({"check": finding.reason, "title": title or fix.title, "why": fix.why, "after": fix.after, "every_way": True,
+                      "ways": [{"heading": way.heading, "steps": list(way.steps), "in_dm": True} for way in ways]})
+    return found
+
+
 def page(reason: str) -> dict | None:
     """Every way for one check, for its help page."""
     fix = FIXES.get(reason)
@@ -333,4 +348,4 @@ def strings() -> list[str]:
     return list(dict.fromkeys(found))
 
 
-__all__ = ["FIXES", "Fix", "Way", "for_findings", "ordered_ways", "page", "strings"]
+__all__ = ["FIXES", "Fix", "Way", "every_way", "for_findings", "ordered_ways", "page", "strings"]

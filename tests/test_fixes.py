@@ -216,6 +216,85 @@ class OnThePage(FlowBase):
         return await result.json()
 
 
+class HelpThread(FlowBase):
+    async def enable(self, **extra):
+        document = await self.service.get_settings(GUILD)
+        document["core"]["help_desk"].update(enabled=True, support_role="970000000000000002", require_attempt=True)
+        document["core"].update(extra)
+        await self.service.save_settings(GUILD, document)
+
+    async def thread_embeds(self):
+        await self.service.open_help(self.port.members[(GUILD, OLD_USER)])
+        return self.port.threads[-1].embeds
+
+    async def test_the_first_message_gives_the_steps_before_the_records(self):
+        await self.enable()
+        self.discord.user["mfa_enabled"] = False
+        await self.verify_through()
+        embeds = await self.thread_embeds()
+        titles = [embed["title"] for embed in embeds]
+        self.assertEqual(titles[1:], [notices.STEPS_TITLE, "Verification records"])
+        steps = embeds[1]["description"]
+        self.assertTrue(steps.startswith(notices.STEPS_LEAD))
+        for heading in ("*In the Discord app on a phone or tablet*", "*In Discord on a computer*", "*With a code app instead*"):
+            self.assertIn(heading, steps)
+        self.assertLessEqual(sum(map(notices.embed_size, embeds)), notices.EMBED_LIMIT)
+
+    async def test_hidden_reasons_give_no_steps(self):
+        await self.enable(show_reason=False)
+        self.discord.user["mfa_enabled"] = False
+        await self.verify_through()
+        self.assertNotIn(notices.STEPS_TITLE, [embed["title"] for embed in await self.thread_embeds()])
+
+    async def test_a_member_who_got_in_since_gets_no_steps(self):
+        await self.enable()
+        await self.db.add_attempt(GUILD, OLD_USER, "failed", check_id="mfa", action="deny", mode="web",
+                                  detail={"findings": [{"check": "mfa", "action": "deny", "reason": "mfa", "detail": {}}]})
+        await self.db.add_attempt(GUILD, OLD_USER, "passed", mode="web", detail={"findings": []})
+        self.assertNotIn(notices.STEPS_TITLE, [embed["title"] for embed in await self.thread_embeds()])
+
+    async def test_an_attempt_from_before_1_4_1_still_gets_its_steps(self):
+        await self.enable()
+        await self.db.add_attempt(GUILD, OLD_USER, "failed", check_id="vpn", action="deny", mode="web",
+                                  detail={"findings": [{"check": "vpn", "action": "deny", "detail": {"network": ["private relay"]}}]})
+        steps = (await self.thread_embeds())[1]["description"]
+        self.assertIn("**Turn off iCloud Private Relay**", steps)
+        self.assertIn("*On an iPhone or iPad*", steps)
+        self.assertIn("*On a Mac*", steps)
+
+    async def test_watched_findings_and_checks_with_no_fix_give_none(self):
+        await self.enable()
+        await self.db.add_attempt(GUILD, OLD_USER, "failed", check_id="account_age", action="deny", mode="web",
+                                  detail={"findings": [{"check": "account_age", "action": "deny", "reason": "account_age", "detail": {}},
+                                                       {"check": "vpn", "action": "watch", "reason": "vpn", "detail": {}}]})
+        self.assertNotIn(notices.STEPS_TITLE, [embed["title"] for embed in await self.thread_embeds()])
+
+    async def test_a_long_server_message_still_fits_discords_limit(self):
+        document = await self.service.get_settings(GUILD)
+        document["messages"]["help_desk"]["description"] = "x" * 3990
+        await self.service.save_settings(GUILD, document)
+        await self.enable()
+        self.discord.user["mfa_enabled"] = False
+        await self.verify_through()
+        embeds = await self.thread_embeds()
+        self.assertLessEqual(sum(map(notices.embed_size, embeds)), notices.EMBED_LIMIT)
+        self.assertIn("Verification records", [embed["title"] for embed in embeds])
+
+    async def test_an_attempt_stores_each_findings_reason(self):
+        self.discord.user["mfa_enabled"] = False
+        await self.verify_through()
+        row = await self.db.one("SELECT detail FROM attempts WHERE user_id = ? AND outcome = 'failed' ORDER BY id DESC LIMIT 1", (OLD_USER,))
+        self.assertEqual(json.loads(row["detail"])["findings"][0]["reason"], "mfa")
+
+    async def verify_through(self, user=OLD_USER, report=None, ip="203.0.113.9"):
+        token = await self.link_for(user)
+        response = await self.sign_in(token, user=user)
+        self.assertIn(f"/v/{token}", response.headers["Location"])
+        result = await self.attempt(token, report, ip)
+        self.assertEqual(result.status, 200, await result.text())
+        return await result.json()
+
+
 class HelpPages(FlowBase):
     async def test_the_index_lists_every_fix_page(self):
         pages = (await (await self.client.get("/api/help")).json())["pages"]

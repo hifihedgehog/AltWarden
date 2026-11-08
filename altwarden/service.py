@@ -1383,8 +1383,12 @@ class Service:
         first = notices.plain_message(document["messages"]["help_desk"], guild.name if guild else "this server", self.public_url)
         # Discord's limit covers every embed in a message, and the server's own text can use nearly all of it.
         records = notices.records_embed(attempts, document["core"]["show_reason"], notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)))
-        if records:
-            first.embeds.append(records)
+        steps = None
+        if document["core"]["show_reason"]:
+            # The steps for the last attempt go first, so the member sees the obvious answers before asking. Records take their room first.
+            room = notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)) - (notices.embed_size(records) if records else 0)
+            steps = notices.steps_embed(fixes.every_way(await self._last_failure(guild_id, user_id)), room)
+        first.embeds += [embed for embed in (steps, records) if embed]
         first.buttons.extend(notices.help_thread_buttons(user_id))
         thread_id = await self.port.open_help_thread(document["core"]["channel"], member.username or user_id, user_id,
                                                       desk["support_role"], first, guild_id=guild_id)
@@ -1395,6 +1399,17 @@ class Service:
         await self.db.update_member(guild_id, user_id, help_thread_id=thread_id)
         await self._log(guild_id, document, ["help_desk"], notices.staff_log("Help thread opened", f"<@{user_id}> opened <#{thread_id}>."))
         return thread_id, f"Your help thread is <#{thread_id}>."
+
+    async def _last_failure(self, guild_id: str, user_id: str) -> list:
+        """What stopped a member's latest attempt, or nothing if they got in since."""
+        row = await self.db.one("SELECT outcome, detail FROM attempts WHERE guild_id = ? AND user_id = ? AND outcome IN ('failed', 'passed', 'manual') "
+                                "ORDER BY at DESC, id DESC LIMIT 1", (guild_id, user_id))
+        if row is None or row["outcome"] != "failed":
+            return []
+        stored = json.loads(row["detail"] or "{}").get("findings", [])
+        # Before 1.4.1 an attempt didn't store a finding's reason, which only the email check's two outcomes need.
+        return [engine.Finding(item["check"], item["action"], item.get("reason") or item["check"], item.get("detail") or {})
+                for item in stored if isinstance(item, dict) and item.get("check") and item.get("action") != WATCH]
 
     async def close_help(self, guild_id: str, thread_id: str, actor: MemberInfo) -> tuple[bool, str]:
         document = await self.get_settings(guild_id)
@@ -1962,7 +1977,7 @@ def _still_enforced(document: dict | None, record: dict) -> bool:
 
 def _attempt_detail(decision: engine.Decision, bypassed: list, notes: dict | None = None) -> dict:
     """What gets stored about an attempt. Labels and scores only, never a raw value."""
-    return {"findings": [{"check": finding.check_id, "action": finding.action, "detail": finding.detail}
+    return {"findings": [{"check": finding.check_id, "action": finding.action, "reason": finding.reason, "detail": finding.detail}
                          for finding in decision.findings], "bypassed": bypassed, **(notes or {})}
 
 
