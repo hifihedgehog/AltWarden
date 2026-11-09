@@ -974,9 +974,9 @@ class Coverage(Helpers):
         calls = []
         original = self.port.open_help_thread
 
-        async def spy(channel_id, name, user_id, role_id, notice, **_):
+        async def spy(channel_id, name, user_id, notice, **_):
             calls.append(notice)
-            return await original(channel_id, name, user_id, role_id, notice)
+            return await original(channel_id, name, user_id, notice)
         self.port.open_help_thread = spy
         await self.open_thread()
         text = json.dumps(calls[0].embeds)

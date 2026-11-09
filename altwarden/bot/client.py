@@ -323,7 +323,8 @@ class AltWardenBot(discord.Client):
         parent = getattr(message.channel, "parent_id", None)
         # Help threads live under the verification channel, so only a post there is looked up. The text itself is never read.
         if parent is not None and str(parent) == settings["core"]["channel"] and not message.author.bot and message.webhook_id is None:
-            await self.service.remind_in_help_thread(str(message.guild.id), str(message.channel.id), str(message.author.id))
+            mentioned = tuple(str(role.id) for role in getattr(message, "role_mentions", ()))  # sent without Message Content
+            await self.service.remind_in_help_thread(str(message.guild.id), str(message.channel.id), str(message.author.id), mentioned)
         if not settings["honeypot"]["enabled"]:
             return
         trap = settings["honeypot"]["channel"]

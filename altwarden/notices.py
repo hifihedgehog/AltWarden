@@ -110,17 +110,32 @@ def _checklist(fixes: list[dict]) -> str:
     return "\n".join(f"- {fix['title']}" for fix in fixes)
 
 
-def help_thread_lead(fixes: list[dict], channel_id: str | None) -> str:
-    """The first lines of a help thread, short and plain, so a member who skips the boxes still sees what to fix."""
-    return (f"Your last attempt didn't pass. To get in, you need to:\n{_checklist(fixes)}\n"
-            f"The steps are in the box below. {_when_done(channel_id)}")
+def _call_staff(support_role: str | None, tried: bool) -> str:
+    """How to reach a person. The role shows as a mention without pinging anyone, so the member knows what to type."""
+    if not support_role:
+        return ""
+    first = "If you've tried every step and still can't get in" if tried else "If you still can't get in"
+    return f"Staff aren't notified yet. {first}, mention <@&{support_role}> and say what happened."
 
 
-def help_reminder(user_id: str, fixes: list[dict], channel_id: str | None) -> Notice:
-    """Posted once when a member writes in their help thread after a failure, because many write before they read."""
-    content = (f"<@{user_id}> Staff will see your message. While you wait, your last attempt needs this fixed:\n{_checklist(fixes)}\n"
-               f"The steps are below. {_when_done(channel_id)}")
-    embed = steps_embed(fixes, EMBED_LIMIT)
+def help_thread_lead(fixes: list[dict], channel_id: str | None, support_role: str | None) -> str:
+    """The first lines of a help thread, short and plain, so a member who skips the boxes still sees what to fix and how to reach staff."""
+    staff = _call_staff(support_role, bool(fixes))
+    if not fixes:
+        return staff
+    lead = f"Your last attempt didn't pass. To get in, you need to:\n{_checklist(fixes)}\nThe steps are in the box below. {_when_done(channel_id)}"
+    return f"{lead}\n{staff}" if staff else lead
+
+
+def help_reminder(user_id: str, fixes: list[dict], channel_id: str | None, support_role: str | None) -> Notice:
+    """Posted once when a member writes in their help thread, because many write before they read. Nobody else is pinged."""
+    staff = _call_staff(support_role, bool(fixes))
+    if fixes:
+        content = f"<@{user_id}> Your last attempt needs this fixed:\n{_checklist(fixes)}\nThe steps are below. {_when_done(channel_id)}"
+        content += f"\n{staff}" if staff else ""
+    else:
+        content = f"<@{user_id}> {staff}"
+    embed = steps_embed(fixes, EMBED_LIMIT) if fixes else None
     return Notice(content=content[:2000], embeds=[embed] if embed else [], mention_users=[user_id])
 
 

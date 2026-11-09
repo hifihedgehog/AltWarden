@@ -427,7 +427,7 @@ export async function render(view) {
           [field("Role to ping", rolePicker(core.alerts.role, (value) => edit(() => { core.alerts.role = value; }), { disabled: !canEdit }), "Pinged when a check stops someone, the honeypot catches someone, a raid starts or an appeal comes in."),
             h("button", { class: "button small", text: "Customize", onclick: alertsDialog })]),
         switchRow("helpdesk", "Help desk", "Add a help button that opens a private thread with staff.", core.help_desk.enabled, (value) => edit(() => { core.help_desk.enabled = value; }, true), [
-          field("Support role", rolePicker(core.help_desk.support_role, (value) => edit(() => { core.help_desk.support_role = value; }), { disabled: !canEdit })),
+          field("Support role", rolePicker(core.help_desk.support_role, (value) => edit(() => { core.help_desk.support_role = value; }), { disabled: !canEdit }), "Opening a thread doesn't ping it. Members are told to mention it once they've tried the steps."),
           ...[["require_attempt", "Members must try verifying first"], ["redirect", "Add a Talk to staff button to the result page"], ["auto_close", "Close the thread when the member verifies"], ["member_close", "Members can close their own thread"]].map(([key, label]) =>
             h("label", { class: "chip" }, h("input", { type: "checkbox", checked: core.help_desk[key], disabled: !canEdit, onchange: (event) => edit(() => { core.help_desk[key] = event.target.checked; }) }), label)),
           messageLink("help_desk", "Edit the first message"),

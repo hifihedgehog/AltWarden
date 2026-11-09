@@ -128,7 +128,7 @@ class OtherServers(Base):
         self.assertEqual(await self.gateway.send(str(CHANNEL), Notice(content="hi"), guild_id=str(GUILD)), "555")
 
     async def test_a_help_thread_stays_in_its_server(self):
-        self.assertIsNone(await self.gateway.open_help_thread("970000000000000098", "x", str(MEMBER), None, Notice(content="hi"), guild_id=str(GUILD)))
+        self.assertIsNone(await self.gateway.open_help_thread("970000000000000098", "x", str(MEMBER), Notice(content="hi"), guild_id=str(GUILD)))
         self.assertEqual(self.requests, [])
 
 
@@ -149,7 +149,7 @@ class WhenDiscordFails(Base):
         self.assertFalse(await self.gateway.delete_message(str(CHANNEL), "1"))
         self.assertFalse(await self.gateway.edit_message(str(CHANNEL), "1", Notice(content="hi")))
         self.assertFalse(await self.gateway.pin(str(CHANNEL), "1"))
-        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")))
+        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), Notice(content="hi")))
         with self.assertRaises(DiscordUnavailable):
             await self.gateway.reopen_thread("970000000000000077")
         self.assertFalse(await self.gateway.close_thread("970000000000000077"))
@@ -629,32 +629,33 @@ class Threads(Base):
         self.answers[("POST", f"/channels/{CHANNEL}/threads")] = thread()
         self.answers[("POST", f"/channels/{THREAD}/messages")] = message(THREAD)
 
-    async def test_a_private_thread_with_the_member_and_a_role_ping(self):
+    async def test_a_private_thread_pings_only_the_member(self):
         self.prepare()
         notice = Notice(content="hello", embeds=[{"description": "Tell us"}])
-        result = await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), str(ROLE_LOW), notice)
+        result = await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), notice)
         self.assertEqual(result, str(THREAD))
         calls = {request[:2]: request[2] for request in self.requests}
         created = calls[("POST", f"/channels/{CHANNEL}/threads")]["json"]
         self.assertEqual((created["type"], created["invitable"], created["auto_archive_duration"]), (12, False, 10080))
         self.assertIn(("PUT", f"/channels/{THREAD}/thread-members/{MEMBER}"), calls)
         self.assertIn(("PUT", f"/channels/{THREAD}/messages/pins/555"), calls)
-        self.assertTrue(notice.content.startswith(f"<@{MEMBER}> <@&{ROLE_LOW}>"))
+        self.assertEqual(notice.content, f"<@{MEMBER}>\nhello")
+        self.assertEqual((notice.mention_users, notice.mention_roles), ([str(MEMBER)], []))
 
     async def test_a_long_message_still_fits_after_the_ping(self):
         self.prepare()
         notice = Notice(content="x" * 2000)
-        await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), None, notice)
+        await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), notice)
         self.assertLessEqual(len(notice.content), 2000)
 
     async def test_a_failed_pin_doesnt_lose_the_thread(self):
         self.prepare()
         self.answers[("PUT", f"/channels/{THREAD}/messages/pins/555")] = self.forbidden()
-        self.assertEqual(await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), None, Notice(content="x")), str(THREAD))
+        self.assertEqual(await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), Notice(content="x")), str(THREAD))
 
     async def test_a_missing_permission_is_none(self):
         self.answers[("POST", f"/channels/{CHANNEL}/threads")] = self.forbidden()
-        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), None, Notice(content="x")))
+        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "member", str(MEMBER), Notice(content="x")))
 
     async def test_closing_locks_and_archives(self):
         self.answers[("GET", f"/channels/{THREAD}")] = thread()

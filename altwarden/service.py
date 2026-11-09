@@ -1374,11 +1374,12 @@ class Service:
         # What stopped their last attempt. With reasons hidden, the steps would name the check.
         found = fixes.every_way(await self._last_failure(guild_id, user_id)) if document["core"]["show_reason"] else []
         where = " The steps for what stopped you are in it." if found else ""
+        support = desk["support_role"]
         if record["help_thread_id"]:
             if await self.port.reopen_thread(record["help_thread_id"], user_id):
                 if found and (record["help_reminded_at"] or 0) < (record["last_fail_at"] or 0):
                     # The pinned steps can be for an older attempt, so the current ones go at the bottom, where the member will type.
-                    await self.port.send(record["help_thread_id"], notices.help_reminder(user_id, found, document["core"]["channel"]), guild_id=guild_id)
+                    await self.port.send(record["help_thread_id"], notices.help_reminder(user_id, found, document["core"]["channel"], support), guild_id=guild_id)
                     await self.db.update_member(guild_id, user_id, help_reminded_at=time.time())
                 return record["help_thread_id"], f"Your help thread is <#{record['help_thread_id']}>.{where}"
             await self.db.update_member(guild_id, user_id, help_thread_id=None)  # Someone deleted it, so start a new one.
@@ -1390,16 +1391,15 @@ class Service:
         first = notices.plain_message(document["messages"]["help_desk"], guild.name if guild else "this server", self.public_url)
         # Discord's limit covers every embed in a message, and the server's own text can use nearly all of it.
         records = notices.records_embed(attempts, document["core"]["show_reason"], notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)))
-        steps = None
-        if found:
-            # A short checklist leads, then the steps, so the member sees the obvious answers before asking. Records take their room first.
-            first.content = notices.help_thread_lead(found, document["core"]["channel"]) + (f"\n\n{first.content}" if first.content else "")
-            room = notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)) - (notices.embed_size(records) if records else 0)
-            steps = notices.steps_embed(found, room)
+        # A short checklist leads, then how to reach staff, so the member sees the obvious answers before asking. Records take their room first.
+        lead = notices.help_thread_lead(found, document["core"]["channel"], support)
+        if lead:
+            first.content = lead + (f"\n\n{first.content}" if first.content else "")
+        room = notices.EMBED_LIMIT - sum(map(notices.embed_size, first.embeds)) - (notices.embed_size(records) if records else 0)
+        steps = notices.steps_embed(found, room) if found else None
         first.embeds += [embed for embed in (steps, records) if embed]
         first.buttons.extend(notices.help_thread_buttons(user_id))
-        thread_id = await self.port.open_help_thread(document["core"]["channel"], member.username or user_id, user_id,
-                                                      desk["support_role"], first, guild_id=guild_id)
+        thread_id = await self.port.open_help_thread(document["core"]["channel"], member.username or user_id, user_id, first, guild_id=guild_id)
         if thread_id is None:
             told = await self._log(guild_id, document, ["help_desk"], notices.staff_log(
                 "Help desk can't open threads", "AltWarden is missing a permission in the verification channel.", notices.RED))
@@ -1409,22 +1409,26 @@ class Service:
         await self._log(guild_id, document, ["help_desk"], notices.staff_log("Help thread opened", f"<@{user_id}> opened <#{thread_id}>."))
         return thread_id, f"Your help thread is <#{thread_id}>.{where}"
 
-    async def remind_in_help_thread(self, guild_id: str, thread_id: str, user_id: str) -> bool:
-        """A member's first post in their own help thread after a failure gets the checklist and the steps again, while staff come."""
+    async def remind_in_help_thread(self, guild_id: str, thread_id: str, user_id: str, mentioned_roles: tuple = ()) -> bool:
+        """A member's first post in their own help thread, and their first after each new failure, gets one reminder: what to fix, and
+        that staff come once they mention the support role. A post that already mentions the role has called staff, so it gets none."""
         document = await self.get_settings(guild_id)
-        if document is None or not document["core"]["help_desk"]["enabled"] or not document["core"]["show_reason"]:
+        if document is None or not document["core"]["help_desk"]["enabled"]:
             return False
+        support = document["core"]["help_desk"]["support_role"]
         async with self._lock(guild_id, user_id):  # two quick posts get one reminder
             record = await self.db.member(guild_id, user_id)
-            if record is None or record["help_thread_id"] != thread_id:
-                return False
+            if record is None or record["help_thread_id"] != thread_id or record["status"] == "verified":
+                return False  # someone else's post, or a member who got in since
             if record["help_reminded_at"] is not None and record["help_reminded_at"] >= (record["last_fail_at"] or 0):
                 return False
-            found = fixes.every_way(await self._last_failure(guild_id, user_id))
-            if not found:
-                return False
+            found = fixes.every_way(await self._last_failure(guild_id, user_id)) if document["core"]["show_reason"] else []
+            if not found and not support:
+                return False  # nothing to fix and nobody to call
             await self.db.update_member(guild_id, user_id, help_reminded_at=time.time())
-        return await self.port.send(thread_id, notices.help_reminder(user_id, found, document["core"]["channel"]), guild_id=guild_id) is not None
+            if support and support in mentioned_roles:
+                return False
+        return await self.port.send(thread_id, notices.help_reminder(user_id, found, document["core"]["channel"], support), guild_id=guild_id) is not None
 
     async def _last_failure(self, guild_id: str, user_id: str) -> list:
         """What stopped a member's latest attempt, or nothing if they got in since."""

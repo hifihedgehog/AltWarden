@@ -242,24 +242,24 @@ class HelpThreads(Gateway):
     async def test_a_first_post_that_fails_takes_its_thread_with_it(self):
         self.opening()
         self.answers[("POST", f"/channels/{THREAD}/messages")] = error(discord.HTTPException, 400, 50035)
-        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")))
+        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), Notice(content="hi")))
         self.assertIn(("DELETE", f"/channels/{THREAD}"), [request[:2] for request in self.requests])
 
     async def test_a_member_who_cant_be_added_takes_the_thread_with_them(self):
         self.opening()
         self.answers[("PUT", f"/channels/{THREAD}/thread-members/{MEMBER}")] = self.forbidden()
-        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")))
+        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), Notice(content="hi")))
         self.assertIn(("DELETE", f"/channels/{THREAD}"), [request[:2] for request in self.requests])
 
     async def test_a_thread_that_cant_be_deleted_either_is_still_a_plain_failure(self):
         self.opening()
         self.answers[("POST", f"/channels/{THREAD}/messages")] = error(discord.HTTPException, 400, 50035)
         self.answers[("DELETE", f"/channels/{THREAD}")] = self.forbidden()
-        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")))
+        self.assertIsNone(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), Notice(content="hi")))
 
     async def test_a_thread_that_opens_stays(self):
         self.opening()
-        self.assertEqual(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), None, Notice(content="hi")), str(THREAD))
+        self.assertEqual(await self.gateway.open_help_thread(str(CHANNEL), "x", str(MEMBER), Notice(content="hi")), str(THREAD))
         self.assertNotIn(("DELETE", f"/channels/{THREAD}"), [request[:2] for request in self.requests])
 
     async def test_closing_an_archived_thread_unarchives_it_first(self):

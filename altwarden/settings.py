@@ -63,8 +63,8 @@ DEFAULT_MESSAGES = {
     },
     "help_desk": {
         "content": "",
-        "title": "Tell us what went wrong",
-        "description": "Describe what happened, and staff will pick this up here. Your failed attempts are listed below.",
+        "title": "Help with verifying",
+        "description": "Try the steps here first. Staff aren't notified until you mention them. Your failed attempts are listed below.",
         "color": 0x1FB8A6,
         "thumbnail": "",
         "image": "",
@@ -370,6 +370,10 @@ def _normalize_check(check_id: str, raw: dict, base: dict) -> dict:
     return result
 
 
+# The help desk message before 1.4.3 said staff would pick the thread up, which stopped being true when opening one stopped pinging them.
+OLD_HELP_DESK = ("Tell us what went wrong", "Describe what happened, and staff will pick this up here. Your failed attempts are listed below.")
+
+
 def _normalize_message(name: str, raw: Any) -> dict:
     base = DEFAULT_MESSAGES[name]
     raw = raw if isinstance(raw, dict) else {}
@@ -383,6 +387,8 @@ def _normalize_message(name: str, raw: Any) -> dict:
         "footer": _text(raw.get("footer"), 2048),
         "author": _snowflake(raw.get("author")),
     }
+    if name == "help_desk" and (result["title"], result["description"]) == OLD_HELP_DESK and not result["author"]:
+        result["title"], result["description"] = base["title"], base["description"]  # an untouched old default
     if name == "verification":
         for prefix in ("verify", "help"):
             result[f"{prefix}_label"] = _text(raw.get(f"{prefix}_label"), 80, base[f"{prefix}_label"]).strip() or base[f"{prefix}_label"]

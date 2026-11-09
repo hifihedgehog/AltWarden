@@ -162,7 +162,7 @@ class FakePort:
     async def pin(self, channel_id, message_id):
         return True
 
-    async def open_help_thread(self, channel_id, name, user_id, role_id, notice, *, guild_id=None):
+    async def open_help_thread(self, channel_id, name, user_id, notice, *, guild_id=None):
         self.calls.append(("open_help_thread", user_id))
         self.threads.append(notice)
         return "970000000000000099"

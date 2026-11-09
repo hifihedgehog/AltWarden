@@ -248,6 +248,8 @@ class HelpThread(FlowBase):
         content = self.port.threads[-1].content
         self.assertTrue(content.startswith("Your last attempt didn't pass. To get in, you need to:\n- Turn on two-factor login in Discord\n"))
         self.assertIn(f"go to <#{CHANNEL}> and press **Verify**", content)
+        self.assertIn("Staff aren't notified yet. If you've tried every step and still can't get in, mention <@&970000000000000002> and say what happened.", content)
+        self.assertFalse(self.port.threads[-1].mention_roles)
         self.assertEqual(reply, f"Your help thread is <#{thread}>. The steps for what stopped you are in it.")
 
     async def failed_with_thread(self):
@@ -264,8 +266,9 @@ class HelpThread(FlowBase):
         thread = await self.failed_with_thread()
         self.assertTrue(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
         notice = self.reminders(thread)[0]
-        self.assertTrue(notice.content.startswith(f"<@{OLD_USER}> Staff will see your message."))
-        self.assertIn("- Turn on two-factor login in Discord", notice.content)
+        self.assertTrue(notice.content.startswith(f"<@{OLD_USER}> Your last attempt needs this fixed:\n- Turn on two-factor login in Discord\n"))
+        self.assertTrue(notice.content.endswith("mention <@&970000000000000002> and say what happened."))
+        self.assertFalse(notice.mention_roles)
         self.assertEqual(notice.embeds[0]["title"], notices.STEPS_TITLE)
         self.assertEqual(notice.mention_users, [OLD_USER])
         self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
@@ -287,12 +290,31 @@ class HelpThread(FlowBase):
     async def test_no_reminder_once_the_member_got_in(self):
         thread = await self.failed_with_thread()
         await self.db.add_attempt(GUILD, OLD_USER, "passed", mode="web", detail={"findings": []})
+        await self.db.mark_verified(GUILD, OLD_USER, "web")
         self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+        self.assertEqual(self.reminders(thread), [])
 
-    async def test_no_reminder_with_reasons_hidden(self):
+    async def test_with_reasons_hidden_the_reminder_only_says_how_to_reach_staff(self):
         thread = await self.failed_with_thread()
         document = await self.service.get_settings(GUILD)
         document["core"]["show_reason"] = False
+        await self.service.save_settings(GUILD, document)
+        self.assertTrue(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+        notice = self.reminders(thread)[0]
+        self.assertEqual(notice.content, f"<@{OLD_USER}> Staff aren't notified yet. If you still can't get in, mention <@&970000000000000002> and say what happened.")
+        self.assertEqual(notice.embeds, [])
+
+    async def test_a_post_that_calls_staff_gets_no_reminder(self):
+        thread = await self.failed_with_thread()
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER, ("970000000000000002",)))
+        self.assertEqual(self.reminders(thread), [])
+        self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
+
+    async def test_no_reminder_with_nothing_to_fix_and_no_role_to_call(self):
+        thread = await self.failed_with_thread()
+        document = await self.service.get_settings(GUILD)
+        document["core"].update(show_reason=False)
+        document["core"]["help_desk"]["support_role"] = None
         await self.service.save_settings(GUILD, document)
         self.assertFalse(await self.service.remind_in_help_thread(GUILD, thread, OLD_USER))
 
@@ -359,6 +381,22 @@ class HelpThread(FlowBase):
         result = await self.attempt(token, report, ip)
         self.assertEqual(result.status, 200, await result.text())
         return await result.json()
+
+
+class HelpDeskMessage(unittest.TestCase):
+    def test_the_old_default_message_becomes_the_new_one(self):
+        from altwarden import settings
+        document = settings.defaults()
+        document["messages"]["help_desk"].update(title=settings.OLD_HELP_DESK[0], description=settings.OLD_HELP_DESK[1])
+        message = settings.normalize(document)["messages"]["help_desk"]
+        self.assertEqual((message["title"], message["description"]),
+                         (settings.DEFAULT_MESSAGES["help_desk"]["title"], settings.DEFAULT_MESSAGES["help_desk"]["description"]))
+
+    def test_a_servers_own_message_stays(self):
+        from altwarden import settings
+        document = settings.defaults()
+        document["messages"]["help_desk"].update(title=settings.OLD_HELP_DESK[0], description="Our own words.")
+        self.assertEqual(settings.normalize(document)["messages"]["help_desk"]["description"], "Our own words.")
 
 
 class HelpPages(FlowBase):

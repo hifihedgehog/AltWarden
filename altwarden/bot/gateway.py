@@ -343,7 +343,7 @@ class Gateway:
         except (*FAILED, AttributeError):
             return False
 
-    async def open_help_thread(self, channel_id: str, name: str, user_id: str, role_id: str | None, notice: Notice, *, guild_id: str | None = None) -> str | None:
+    async def open_help_thread(self, channel_id: str, name: str, user_id: str, notice: Notice, *, guild_id: str | None = None) -> str | None:
         channel = self._channel(channel_id)
         if not isinstance(channel, discord.TextChannel) or (guild_id is not None and str(channel.guild.id) != guild_id):
             return None
@@ -352,10 +352,10 @@ class Gateway:
             thread = await channel.create_thread(name=name[:90] or "Help", type=discord.ChannelType.private_thread, invitable=False,
                                                  auto_archive_duration=10080, reason="Help desk")
             await thread.add_user(discord.Object(int(user_id)))
-            ping = f"<@{user_id}>" + (f" <@&{role_id}>" if role_id else "")
-            notice.content = f"{ping}\n{notice.content}".strip()[:2000]
+            # Only the member is pinged. Staff come when the member mentions the support role, which also adds them to the thread.
+            notice.content = f"<@{user_id}>\n{notice.content}".strip()[:2000]
             notice.mention_users = [user_id]
-            notice.mention_roles = [role_id] if role_id else []
+            notice.mention_roles = []
             message = await thread.send(**to_kwargs(notice))
             try:
                 await message.pin()
