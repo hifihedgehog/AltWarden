@@ -129,7 +129,7 @@
 "Your country isn't accepted here": "此处不接受你所在的国家或地区",
 "This server chooses which countries can verify, based on your connection.": "此服务器会根据你的网络连接，决定哪些国家或地区可以验证。",
 "If you're traveling, try again from your usual connection.": "如果你在旅行，请使用平时的网络连接重试。",
-"Links are personal and stop working after a while, or when a newer link replaces them.": "链接是个人专用的，一段时间后或被新链接取代时就会失效。",
+"Links are personal and stop working after a while, or once you've asked for several newer ones.": "链接是个人专属的，过一段时间后就会失效。如果你申请了好几个新链接，最早的链接也会失效。",
 "Go to the server's verification channel and press Verify for a new link.": "前往服务器的验证频道，点击 Verify 获取新链接。",
 "If your browser blocks cookies, allow them for this site, then try again.": "如果你的浏览器阻止了 Cookie，请为此网站允许 Cookie，然后重试。",
 "If you were removed from the server, contact its staff.": "如果你已被移出服务器，请联系其管理员。",

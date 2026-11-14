@@ -228,7 +228,7 @@ class BypassLinks(Helpers):
         self.assertEqual(row["bypass"], ["vpn"])
         self.assertEqual(row["expires_at"], old["expires_at"])
         self.assertEqual(row["bypass_by"], STAFF)
-        self.assertIsNone(await self.service.session(first.rsplit("/", 1)[1]), "the older link stops working")
+        self.assertIsNotNone(await self.service.session(first.rsplit("/", 1)[1]), "the older link still works")
 
     async def test_button_and_instant_servers_hand_out_the_web_link(self):
         for mode in ("button", "instant"):

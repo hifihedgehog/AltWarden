@@ -359,6 +359,9 @@ async def verify_state(request: web.Request) -> web.Response:
     step = {"open": "signin", "signed_in": "check", "checking": "check", "done": "done"}[row["state"]]
     if step == "check" and not _same_browser(request, token, row):
         step = "signin"
+    # Another of their links got them in, or staff did. Signing in again would only end at the same answer.
+    if step != "done" and member is not None and settings and settings["core"]["verified_role"] in member.role_ids:
+        step = "done"
     state = {
         "step": step,
         "tried": row["finished_at"] is not None,

@@ -129,7 +129,7 @@
 "Your country isn't accepted here": "あなたの国からは受け付けていません",
 "This server chooses which countries can verify, based on your connection.": "このサーバーは認証できる国を指定しており、接続情報で判定します。",
 "If you're traveling, try again from your usual connection.": "旅行中の場合は、いつもの接続からもう一度お試しください。",
-"Links are personal and stop working after a while, or when a newer link replaces them.": "リンクは個人専用で、しばらくたつか、新しいリンクに置き換わると使えなくなります。",
+"Links are personal and stop working after a while, or once you've asked for several newer ones.": "リンクは本人専用で、しばらくすると使えなくなります。新しいリンクを何度も発行した場合も、古いものから使えなくなります。",
 "Go to the server's verification channel and press Verify for a new link.": "サーバーの認証チャンネルでVerifyを押して、新しいリンクを受け取ってください。",
 "If your browser blocks cookies, allow them for this site, then try again.": "ブラウザが Cookie をブロックしている場合は、このサイトで許可してからもう一度お試しください。",
 "If you were removed from the server, contact its staff.": "サーバーから外された場合は、スタッフに連絡してください。",

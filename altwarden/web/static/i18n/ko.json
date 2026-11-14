@@ -129,7 +129,7 @@
 "Your country isn't accepted here": "이 국가에서는 이용할 수 없어요",
 "This server chooses which countries can verify, based on your connection.": "이 서버는 연결 정보를 기준으로 인증할 수 있는 국가를 정해요.",
 "If you're traveling, try again from your usual connection.": "여행 중이라면 평소 쓰는 연결로 다시 시도해 주세요.",
-"Links are personal and stop working after a while, or when a newer link replaces them.": "링크는 개인별로 발급되며, 시간이 지나거나 새 링크로 대체되면 작동하지 않아요.",
+"Links are personal and stop working after a while, or once you've asked for several newer ones.": "링크는 본인 전용이며 시간이 지나면 더 이상 작동하지 않아요. 새 링크를 여러 번 받은 경우에도 오래된 링크부터 사용할 수 없게 돼요.",
 "Go to the server's verification channel and press Verify for a new link.": "서버의 인증 채널로 가서 Verify를 누르면 새 링크를 받을 수 있어요.",
 "If your browser blocks cookies, allow them for this site, then try again.": "브라우저가 쿠키를 차단한다면 이 사이트에서 허용한 뒤 다시 시도해 주세요.",
 "If you were removed from the server, contact its staff.": "서버에서 제거되었다면 운영진에게 연락해 주세요.",

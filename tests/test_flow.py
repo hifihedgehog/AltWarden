@@ -254,10 +254,10 @@ class SignInGuards(Base):
         data = await (await self.client.get("/api/verify/" + "a" * 43)).json()
         self.assertEqual(data["step"], "expired")
 
-    async def test_new_link_kills_the_old_one(self):
+    async def test_a_new_link_leaves_the_old_one_working(self):
         first = await self.link_for()
         await self.link_for()
-        self.assertIsNone(await self.service.session(first))
+        self.assertIsNotNone(await self.service.session(first))
 
 
 class SubmissionGuards(Base):

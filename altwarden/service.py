@@ -25,6 +25,9 @@ from .ports import DISCORD_BUSY, MEMBER_GONE, ROLE_TOO_LOW, DiscordPort, Discord
 log = logging.getLogger("altwarden.service")
 
 LINK_MINUTES = 60
+# A member's newest links stay live together. Members often press Verify in the channel and then open the link AltWarden
+# sent by DM, and replacing it made that one read as expired. Past this many, the oldest goes, so presses can't pile up.
+LINKS_KEPT = 5
 MAX_BYPASS_HOURS = 168
 APPEAL_WINDOW = 7 * 86400
 IMPORTED_WITHOUT_ROLE = "imported-without-role"  # an import by another role marks a member verified before they hold the verified role
@@ -485,7 +488,7 @@ class Service:
 
     async def new_link(self, guild_id: str, user_id: str, document: dict, *, bypass: list | None = None,
                        bypass_by: str | None = None, hours: int | None = None) -> tuple[str, int]:
-        """Create a personal link, replacing any link the member already had.
+        """Create a personal link. The member's earlier links keep working, up to LINKS_KEPT, until they end.
 
         Only a hash of a link is kept, so a bypass link can't be shown again. If a member with a
         live one presses Verify, the new link inherits what it skips and when it ends.
@@ -501,8 +504,12 @@ class Service:
             skipped, bypass_by, expires_at = kept["bypass"], kept["bypass_by"], kept["expires_at"]
             minutes = max(1, int((expires_at - now) / 60))
         token = new_token()
-        async with self._lock(guild_id, user_id):  # two presses at once would otherwise leave two live links
-            await self.db.run("DELETE FROM sessions WHERE guild_id = ? AND user_id = ? AND state != 'done'", (guild_id, user_id))
+        async with self._lock(guild_id, user_id):  # two presses at once would otherwise both keep the link the cap says goes
+            # Ended links go now. Of the rest, the newest LINKS_KEPT - 1 stay beside the new one.
+            await self.db.run(
+                "DELETE FROM sessions WHERE guild_id = ?1 AND user_id = ?2 AND state != 'done' AND (expires_at <= ?3 OR token_hash NOT IN ("
+                "SELECT token_hash FROM sessions WHERE guild_id = ?1 AND user_id = ?2 AND state != 'done' AND expires_at > ?3 "
+                "ORDER BY created_at DESC LIMIT ?4))", (guild_id, user_id, now, LINKS_KEPT - 1))
             await self.db.run(
                 "INSERT INTO sessions (token_hash, guild_id, user_id, bypass, bypass_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (token_hash(token), guild_id, user_id, skipped, bypass_by, now, expires_at))
@@ -656,7 +663,7 @@ class Service:
             # This waited its turn. A deletion, a reset or a staff verify may have gone through meanwhile, and what it would write would undo them.
             current = await self.session(token)
             if current is None or current["state"] != "checking":
-                return Result("problem", "This link has expired", "Links are personal and stop working after a while, or when a newer link replaces them.",
+                return Result("problem", "This link has expired", "Links are personal and stop working after a while, or once you've asked for several newer ones.",
                               reason="link_expired", help_slug="link-expired")
             return await self._submit_web(token, row, report, ip=ip, headers=headers, device_id=device_id, cookie_refused=cookie_refused)
 

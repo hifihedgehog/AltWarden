@@ -689,10 +689,13 @@ class Outcomes(Base):
         self.assertEqual(result["reason"], "left_server")
         self.assertNotIn("Couldn't give the verified role", json.dumps([notice.embeds for _, notice in self.port.sent]))
 
-    async def test_two_presses_at_once_leave_one_link(self):
+    async def test_presses_at_once_keep_no_more_than_the_cap(self):
+        from altwarden.service import LINKS_KEPT
         member = self.port.members[(GUILD, OLD_USER)]
         await asyncio.gather(self.service.press_verify(member), self.service.press_verify(member))
-        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM sessions"), 1)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM sessions"), 2)
+        await asyncio.gather(*(self.service.press_verify(member) for _ in range(LINKS_KEPT + 3)))
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM sessions"), LINKS_KEPT)
 
     async def test_a_purged_server_leaves_no_settings_in_memory(self):
         await self.service.get_settings(GUILD)

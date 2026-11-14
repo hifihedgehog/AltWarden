@@ -129,7 +129,7 @@
 "Your country isn't accepted here": "Dein Land wird hier nicht akzeptiert",
 "This server chooses which countries can verify, based on your connection.": "Dieser Server legt anhand deiner Verbindung fest, aus welchen Ländern man sich verifizieren kann.",
 "If you're traveling, try again from your usual connection.": "Wenn du unterwegs bist, versuche es noch mal über deine gewohnte Verbindung.",
-"Links are personal and stop working after a while, or when a newer link replaces them.": "Links sind persönlich und funktionieren nach einer Weile nicht mehr oder wenn ein neuerer Link sie ersetzt.",
+"Links are personal and stop working after a while, or once you've asked for several newer ones.": "Links sind persönlich und funktionieren nach einer Weile nicht mehr, oder sobald du mehrere neuere angefordert hast.",
 "Go to the server's verification channel and press Verify for a new link.": "Geh in den Verifizierungskanal des Servers und drücke auf Verify für einen neuen Link.",
 "If your browser blocks cookies, allow them for this site, then try again.": "Wenn dein Browser Cookies blockiert, erlaube sie für diese Seite und versuche es dann noch einmal.",
 "If you were removed from the server, contact its staff.": "Wenn du vom Server entfernt wurdest, wende dich an das Serverteam.",
